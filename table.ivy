@@ -103,7 +103,7 @@ module hash_table(key,value,shard) = {
                 idx := tab.next(idx)
             };		
             res.lo := lo;
-            res.hi := hi
+            res.hi := hi;
 	}
 
 	implement incorporate(s:shard) {

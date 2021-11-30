@@ -18,9 +18,9 @@ process manager(self:manager_id)  = {
     # value (2) but we can override it on the command line.
 
     common {
-    parameter fail_time : nat = 2
-    var server_in_ring = 4
-    instance op_t : option(man_msg_t)
+    	parameter fail_time : nat = 2
+    	var server_in_ring = 4
+    	instance op_t : option(man_msg_t)
     }
 
     # The manager has a socket on the management network
@@ -41,10 +41,13 @@ process manager(self:manager_id)  = {
 
         # Initialize ring with hash code
         var primary := 0;
-        var default_len := hash_t.max/server_in_ring;
+        var default_len := (hash_t.max+1)/server_in_ring;
+
+	assert hash_t.max+1 >= server_in_ring;
+
         var s := 0;
-        var e := s + default_len;
-        while primary < server_in_ring:
+        var e := s + default_len-1;
+        while primary < server_in_ring{
             used_server := used_server.append(primary);
             conf.primary := primary;
             conf.secondary := primary + 1;
@@ -58,7 +61,8 @@ process manager(self:manager_id)  = {
             confmap.set(s,e,conf);
             primary := primary + 1;
             s := e + 1;
-            e := s + default_len;
+            e := s + default_len-1;
+	}
     }
 
     # We say a server is 'up' if we have heard from it in
@@ -106,7 +110,7 @@ process manager(self:manager_id)  = {
 
 
 
-
+    # TODO annouce both primary and secondary config
 
     # Here, we announce a new view to all clients and
     # servers on the management overlay. We construct the
@@ -119,18 +123,18 @@ process manager(self:manager_id)  = {
     # range is represented by a low key iterator and a
     # high key iterator.
 
-    action announce(view:nat, lo: key_t.iter.t, hi:key_t.iter.t, primary:server_id, secondary:server_id) = {
-if ~proposed {
-    var msg : man_msg_t;
-    msg.view := view;
-    msg.lo := lo;
-    msg.hi := hi;
-    msg.primary := primary;
-    msg.secondary := secondary;
-    # ask paxos to agree on our view change
-    paxos.server.propose(client.manager.op_t.just(msg));
-    proposed := true;
-}
+    action announce(view:nat, lo: hash_t.iter.t, hi:hash_t.iter.t, primary:server_id, secondary:server_id) = {
+	if ~proposed {
+	    var msg : man_msg_t;
+	    msg.view := view;
+	    msg.lo := lo;
+	    msg.hi := hi;
+	    msg.primary := primary;
+	    msg.secondary := secondary;
+	    # ask paxos to agree on our view change
+	    paxos.server.propose(client.manager.op_t.just(msg));
+	    proposed := true;
+	}
     }
 
     # On callback from Paxos we execute the view
@@ -195,6 +199,8 @@ if ~proposed {
     # Finally, if the manager recevies a 'ping' from a
     # server with the current view, it records the fact that
     # it heard from that server at the current time.
+
+    # TODO: handle frequency and move server in ring
 
     implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
         if msg.view = view {

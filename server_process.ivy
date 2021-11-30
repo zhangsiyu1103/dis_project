@@ -12,7 +12,7 @@ process server(self:server_id) = {
 
     # The state of a server consists of:
 
-    instance table : hash_table(hash_t,file,shard_t)  # NEW: key/value replica
+    instance table : hash_table(key_t,file,shard_t)  # NEW: key/value replica
     var view : nat                                   # the current view
     instance confmap : delegation_map(hash_t,config)  # NEW
     instance timer : timeout_sec                     # timer for ping messages
@@ -21,18 +21,22 @@ process server(self:server_id) = {
     
     # Notice here the intial primary and secondary are
     # 0,1, as in the manager.
-
+    
+    # TODO Change new init
     after init {
         var conf : config;
         conf.primary := 0;
         conf.secondary := 1;
         conf.replicating := false;
-        confmap.set(key_t.iter.begin,key_t.iter.end,conf);
+    	confmap.set(key_t.iter.begin,key_t.iter.end,conf);
         view := 0;
         replicating := false;
     }
     
     # Implementation of message receipt on the client-server network.
+
+    # TODO examine code, add homework5 reroute
+    # Clean frequency if server moves on the ring
 
     implement sock.recv(src:tcp.endpoint,msg:msg_t) {
         debug "recv" with self = self, msg = msg;
@@ -171,6 +175,8 @@ process server(self:server_id) = {
     
     # On a timer 'tick', we send a 'ping' to the manager
     # with our current view number.
+
+    # TODO ping freq
 
     implement timer.timeout {
         var msg : man_msg_t;
