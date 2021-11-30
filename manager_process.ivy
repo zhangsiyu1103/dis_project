@@ -1,0 +1,209 @@
+#lang ivy1.8
+include delmap
+include multi_paxos
+process manager(self:manager_id)  = {
+
+    # The manager's state has the following elements:
+
+    var view : nat                    # The current view number
+    var time : nat                    # The current time in seconds
+    var heard(X:server_id) : nat      # Last time we head from server `X`
+    instance confmap : delegation_map(hash_t,config)   # NEW: the configuration map
+    var proposed : bool               # Have we proposed a new view?
+
+    var used_server : vector(server_id);
+
+    # There is also a parameter that determines how long to wait without a ping
+    # before we conclude a server has failed. Notice this parameter has a default
+    # value (2) but we can override it on the command line.
+
+    common {
+    parameter fail_time : nat = 2
+    var server_in_ring = 4
+    instance op_t : option(man_msg_t)
+    }
+
+    # The manager has a socket on the management network
+
+    instance sock : man_net.socket
+
+    # It also has a timer that 'ticks' once per second
+
+    instance timer : timeout_sec
+
+    # Initially, we have...
+
+    after init {
+        view := 0;        # view is zero
+        time := 0;        # time is zero
+        proposed := false;
+        var conf : config;
+
+        # Initialize ring with hash code
+        var primary := 0;
+        var default_len := hash_t.max/server_in_ring;
+        var s := 0;
+        var e := s + default_len;
+        while primary < server_in_ring:
+            used_server := used_server.append(primary);
+            conf.primary := primary;
+            conf.secondary := primary + 1;
+            if conf.secondary == server_in_ring{
+                conf.secondary := 0;
+            }
+            conf.replicating := false;
+            if e > hash_t.max{
+                e = hash_t.max
+            }
+            confmap.set(s,e,conf);
+            primary := primary + 1;
+            s := e + 1;
+            e := s + default_len;
+    }
+
+    # We say a server is 'up' if we have heard from it in
+    # the last 'fail_time' seconds.
+
+    function is_up(S:server_id) = time <= heard(S) + fail_time
+
+
+    # TODO: the manager handler a time 'tick' event.
+
+    #TODO:  handle failstop of server
+    implement timer.timeout {
+        debug "tick" with time = time, primary = heard(primary), secondary = heard(secondary), backup = heard(2);
+        time := time + 1;         # increment the time
+
+        if ~is_up(primary) {
+
+            debug "primary failed";
+
+            if some (s:server_id) s ~= secondary & is_up(s) {
+
+                # Increment the view, promote the
+                # secondary to primary and let the fresh
+                # server `s` be the new
+                # secondary. Broadcast an announcement of
+                # this fact to all clients and servers.
+
+                view := view + 1;
+                primary := secondary;
+                secondary := s;
+                debug "primary failover" with new_primary = primary, new_secondary = secondary;
+                announce;
+            }
+        } else if ~is_up(secondary) {
+            debug "secondary failed";
+
+            if some (s:server_id) s ~= primary & is_up(s) {
+                view := view + 1;
+                secondary := s;
+                debug "secondary failover" with new_primary = primary, new_secondary = secondary;
+                announce;
+            }
+        }
+    }
+
+
+
+
+
+    # Here, we announce a new view to all clients and
+    # servers on the management overlay. We construct the
+    # announcement message and loop over all clients and
+    # servers, sending the message to their management
+    # socket. We just propose the new view to Paxos here.
+    # We execute the new view on callback from Paxos.
+
+    # NEW: We now have a range of keys to deal with.  The
+    # range is represented by a low key iterator and a
+    # high key iterator.
+
+    action announce(view:nat, lo: key_t.iter.t, hi:key_t.iter.t, primary:server_id, secondary:server_id) = {
+if ~proposed {
+    var msg : man_msg_t;
+    msg.view := view;
+    msg.lo := lo;
+    msg.hi := hi;
+    msg.primary := primary;
+    msg.secondary := secondary;
+    # ask paxos to agree on our view change
+    paxos.server.propose(client.manager.op_t.just(msg));
+    proposed := true;
+}
+    }
+
+    # On callback from Paxos we execute the view
+    # change. NEW: THis is tricky because the range of keys to
+    # assign may cross over an exiting range boundary.  We
+    # have to loop, only assigning up to the next range
+    # bondary, until the full range is assigned. The
+    # servers depend on the new view ranges not crossing
+    # existing boundaries.
+
+    implement paxos.server.decide(inst : paxos.instance_t, op: op_t) {
+        debug "decide" with inst=inst, op=op;
+        proposed := false;
+        if ~op.is_empty {
+            var msg := op.contents;
+            var conf : config;
+            conf.primary := msg.primary;
+            conf.secondary := msg.secondary;
+            var hi := msg.hi;
+            while msg.lo < hi {
+                msg.hi := hi;
+                var lub := confmap.lub(msg.lo.next);
+                if lub < msg.hi {
+                    msg.hi := lub;
+                }
+                assign_in_steps(msg);
+                confmap.set(msg.lo,msg.hi,conf);
+                msg.lo := msg.hi;
+            }
+        }
+    }
+
+    # NEW: Each view change is done in two steps:
+    # - First, make the new primary secondary
+    # - Then make the secondary primary and replicate to new secondary
+    # This lets us handle the view changes asynchronously as in HW #5.
+    # The first step is needed only both the primary and secondary are changing.
+
+    action assign_in_steps(msg:man_msg_t) = {
+        var config := confmap.get(msg.lo.val);  # get the old config
+        if config.primary ~= msg.primary & config.secondary ~= msg.primary {
+            var pmsg := msg;
+            pmsg.primary := config.primary;
+            pmsg.secondary := msg.primary; 
+            broadcast(pmsg);
+        }
+        broadcast(msg);
+    }
+
+    action broadcast(msg:man_msg_t) = {
+        debug "announce" with msg=msg;
+        view := view.next;
+        msg.view := view;
+        for it,cl in client_id.iter {
+            sock.send(client(cl).man_sock.id,msg);
+        }
+        for it,sv in server_id.iter {
+            sock.send(server(sv).man_sock.id,msg);
+        }
+    }
+
+    # Finally, if the manager recevies a 'ping' from a
+    # server with the current view, it records the fact that
+    # it heard from that server at the current time.
+
+    implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+        if msg.view = view {
+            heard(msg.src) := time
+        }
+    }
+
+    # NEW: here is the Multi-Paxos instantiation:
+
+    instance paxos : multi_paxos(manager_id,client.manager.op_t,client.manager.op_t.empty)
+
+} with vector[server_id]

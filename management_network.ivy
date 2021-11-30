@@ -1,0 +1,25 @@
+#lang ivy1.8
+
+module management_network = {
+
+    # Management messages (announcements and pings) have the
+    # following structure:
+
+    class man_msg_t = {
+        field view : nat               # the view number
+        field time : nat               # the current time in seconds
+        field lo : key_t.iter.t
+        field hi : key_t.iter.t
+        field primary : server_id      # primary server id, if any
+        field secondary : server_id    # secondary server id, if any
+        field src : server_id
+
+        field freq : nat               # current frequency of hit
+    }
+
+    # Overlay for management messages
+
+    instance man_net : tcp_test.net(man_msg_t)
+
+    
+}

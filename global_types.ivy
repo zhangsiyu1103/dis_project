@@ -1,0 +1,28 @@
+#lang ivy1.8
+
+include order
+include collections
+include numbers
+
+global {
+
+    # Up to now, we have assumed that each replica has a local client
+    # in the same process space. Now, to allow the cleints and servers
+    # to fail independently, we will have separate client and server
+    # processes, communicating with messages. For this reason, we have two types
+    # of process id: `client_id` and `server_id`. In addition, we have a type
+    # manager_id since the manager is replicated
+
+    instance client_id : iterable
+    instance server_id : iterable
+    instance manager_id : iterable
+
+
+    # Our file datatype is the same as before:
+
+    alias byte = uint[8]
+    instance file : vector(byte)
+
+    instance key_t: iterable
+    instance hash_t: iterable
+}

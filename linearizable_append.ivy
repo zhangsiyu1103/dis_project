@@ -1,0 +1,80 @@
+#lang ivy1.8
+
+module linearizable_append(client_id,key_t,byte,file) = {
+
+    # The append/show interface is the same as in our previous
+    # linearizable chain protocol without failures:
+
+    export action append_req(key:ket_t,val:byte)
+    import action append_rsp
+    export action show_req(key:ket_t)
+    import action show_rsp(content:file)
+    
+    # This is our linearizability spec, same as before.
+
+    common {
+
+        specification {
+
+            action commit(self:client_id)
+
+            type op_kind = {append_kind,show_kind}
+
+            var st(K:key_t) : file
+
+            var pending(X:client_id) : bool           # a transaction is pending
+            var pending_kind(X:client_id) : op_kind   # kind of the pending transaction
+            var pending_key(X:client_id) : key_t      # key of the pending transaction
+            var pending_append(X:client_id) : byte    # value to append, if any
+            var pending_show(X:client_id) : file      # value to show, if any
+            var committed(X:client_id) : bool         # is this transaction committed?
+
+            after init {
+                pending(X) := false;
+                committed(X) := false;
+            }
+
+            before append_req(self:client_id,key:key_t,val:byte) {
+                require ~pending(self);
+                pending(self) := true;
+                pending_kind(self) := append_kind;
+                pending_key(self) := key;
+                pending_append(self) := val;
+            }
+
+            before append_rsp(self:client_id) {
+                require pending(self) & pending_kind(self) = append_kind & committed(self);
+                pending(self) := false;
+                committed(self) := false;
+            }
+
+            before show_req(self:client_id,key:key_t) {
+                require ~pending(self);
+                pending(self) := true;
+                pending_kind(self) := show_kind;
+                pending_key(self) := key;
+            }
+
+            before show_rsp(self:client_id,content:file) {
+                require pending(self) & pending_kind(self) = show_kind & committed(self);
+                require content = pending_show(self);
+                pending(self) := false;
+                committed(self) := false;
+            }
+
+            before commit {
+                debug "commit" with self = self;
+                require pending(self) & ~committed(self);
+                var key:=pending_key(self);
+                if pending_kind(self) = append_kind {
+                    st(key) := st(key).append(pending_append(self));
+                } else {
+                    pending_show(self) := st(key);
+                }
+                committed(self) := true;
+            }
+
+        }
+    }
+}
+

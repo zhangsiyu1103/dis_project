@@ -1,0 +1,53 @@
+#lang ivy1.8
+
+include numbers
+include order
+include table
+include shard
+
+
+instance key_t : unsigned_bit_vector(4)
+type t
+
+instance shard : table_shard(key_t,t)
+instance tab : hash_table(key_t,t,shard)
+
+export action set(k:key_t,v:t) = {
+    tab.set(k,v);
+}
+
+action key_lb(lo:key_t) returns(begin:key_t.iter) = {
+    begin := key_t.iter.create(lo);
+}
+
+action key_ub(hi:key_t) returns(end:key_t.iter) = {
+    end := key_t.iter.end if hi.is_max else key_t.iter.create(hi.next);
+}
+
+export action erase(lo:key_t,hi:key_t) = {
+    tab.erase(key_lb(lo),key_ub(hi));
+}
+
+export action extract_(lo:key_t,hi:key_t) = {
+    debug "extract" with shard = tab.extract_(key_lb(lo),key_ub(hi));
+}
+
+export action show_all = {
+    var it := tab.begin;
+    var en := tab.end;
+    while it < en {
+        debug "show" with key=it.val, v=tab.get(it.val);
+        it := tab.next(it);
+    }
+}
+
+export action show(lo:key_t,hi:key_t) = {
+    var it := key_lb(lo);
+    var en := key_ub(hi);
+    while it < en {
+        debug "show" with key=it.val, v=tab.get(it.val);
+        it := tab.next(it);
+    }
+}
+
+

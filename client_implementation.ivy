@@ -1,0 +1,80 @@
+#lang ivy1.8
+
+module client_implementation = {
+    # Now that we've defined the manager and server process, we
+    # implement the client.  The client has sockets on both the
+    # client-server overlay and the management overlay, so it
+    # gets announcements of view changes.
+
+    instance sock : net.socket
+    instance man_sock : man_net.socket
+
+    # The client records the current primary and secondary for
+    # each key.
+
+    instance confmap : delegation_map(hash_t,config)
+
+    # By agreement, these are 0,1 initially.
+
+    after init {
+        var conf : config;
+        conf.primary := 0;
+        conf.secondary := 1;
+        conf.replicating := false;
+        confmap.set(key_t.iter.begin,key_t.iter.end,conf);
+    }
+
+    # When the client gets an append request, it sends an append
+    # request messages to the primary.
+
+    implement append_req {
+        var msg : msg_t;
+        msg.kind := append_req_kind;
+        msg.src_client := self;
+        msg.key := key;
+        msg.val := val;
+        var conf := confmap.get(key);
+        var primary := conf.primary;  # Get the primary for this key
+        sock.send(server(primary).sock.id, msg);
+    }
+
+    # When the client gets a show request, it sends a show request
+    # message to the *primary* (unlike  in chain replication where the
+    # primary handles writes and the last replica in the chain
+    # handles reads).
+
+    implement show_req {
+        var msg : msg_t;
+        msg.kind := show_req_kind;
+        msg.src_client := self;
+        msg.key := key;
+        var conf := confmap.get(key);
+        var primary := conf.primary;  # Get the primary for this key
+        sock.send(server(primary).sock.id, msg);
+    }
+
+    # When the client gets an `append_rsp` message, it creates an
+    # `append_rsp` event (handled by the environment). Similarly,
+    # when it gets a `show_rsp` message it creats a `show_rsp`
+    # event.
+
+    implement sock.recv(src:tcp.endpoint,msg:msg_t) {
+        if msg.kind = append_rsp_kind {
+            append_rsp;
+        } else if msg.kind = show_rsp_kind {
+            show_rsp(msg.contents);
+        }
+    }
+
+    # Finally, when the client receives an announcement message on the
+    # management overlay, it records the new primary and secondary (no
+    # need to record the view number, as the client doesn't use it).
+
+    implement man_sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+        var conf : config;
+        conf.primary := msg.primary;
+        conf.secondary := msg.secondary;
+        confmap.set(msg.lo,msg.hi,conf);
+        debug "new view" with client=self, lo=msg.lo, hi=msg.hi, primary=msg.primary, secondary=msg.secondary
+    }
+}

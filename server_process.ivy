@@ -1,0 +1,224 @@
+#lang ivy1.8
+include table
+
+process server(self:server_id) = {
+
+    # Each server process has a socket on the
+    # client-server overlay *and* a socket on the
+    # management overlay.
+
+    instance sock : net.socket
+    instance man_sock : man_net.socket
+
+    # The state of a server consists of:
+
+    instance table : hash_table(hash_t,file,shard_t)  # NEW: key/value replica
+    var view : nat                                   # the current view
+    instance confmap : delegation_map(hash_t,config)  # NEW
+    instance timer : timeout_sec                     # timer for ping messages
+    instance view_queue : unbounded_queue(man_msg_t) # NEW
+    var replicating : bool         # Are we replicating any keys?
+    
+    # Notice here the intial primary and secondary are
+    # 0,1, as in the manager.
+
+    after init {
+        var conf : config;
+        conf.primary := 0;
+        conf.secondary := 1;
+        conf.replicating := false;
+        confmap.set(key_t.iter.begin,key_t.iter.end,conf);
+        view := 0;
+        replicating := false;
+    }
+    
+    # Implementation of message receipt on the client-server network.
+
+    implement sock.recv(src:tcp.endpoint,msg:msg_t) {
+        debug "recv" with self = self, msg = msg;
+
+        # TODO: We need to change the incoming message handling logic.
+        # Be careful to make sure that the secondary rejects any
+        # incoming requests that are *not* from the current primary.
+        # HINT: You can test whether the message comes from server
+        # `x` with the expression `src = server(x).sock.id`.
+
+        # If we get an append request and we are primary,
+        # do the append and pass it to the secondary.
+        # TRICKY: The primary records all the append requests
+        # in a ghost queue by calling `serialize`. The secondary commits
+        # operations from this queue. However, if the secondary fails,
+        # the primary becomes (momentarily) last in the chain, so it
+        # must commit the remaining operations in the queue. It's OK for the
+        # queue to be shared between processes because it is "ghost" -- it's
+        # not actually present in production. 
+        # If we are secondary, do the append and send a
+        # response message back to the *primary*. In addition, if
+        # we are secondary, we 'commit' the operation with
+        # a ghost call. 
+
+        if msg.kind = append_req_kind {
+            var conf := confmap.get(msg.key);  # NEW: look up primary/secondary
+            if conf.primary = self {
+                var contents := table.get(msg.key); 
+                table.set(msg.key,contents.append(msg.val));  # NEW: store in table
+                sock.send(server(conf.secondary).sock.id,msg);
+                serialize(msg.key,self,conf.secondary,msg.src_client);    # ghost call
+            }
+            else if conf.secondary = self  & ~conf.replicating {  # Note -- ignore if not replicating (could be old!)
+                if src = server(conf.primary).sock.id { 
+                    var contents := table.get(msg.key);
+                    table.set(msg.key,contents.append(msg.val));
+                    debug "set table" with key=msg.key, val=contents.append(msg.val);
+                    msg.kind := append_rsp_kind;
+                    sock.send(server(conf.primary).sock.id,msg);  # respond back to server
+                    debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
+                    commit_one(msg.key);
+                }
+            }
+        } else if msg.kind = append_rsp_kind { 
+            sock.send(client(msg.src_client).sock.id,msg);  # We pass it on to client.
+        } else if msg.kind = show_req_kind {
+
+            # We now handle show requests at the primary. We respond to the
+            # client with a `show_rsp` messages and our current contents. We
+            # also commit the operation. Notice if we are waiting for a replicate
+            # message, we can't serve `show` requests yet. We could queue the lost
+            # requests, but it is just as well to drop them, since the request could have gone
+            # to the failed server and been lost anyway.
+
+            var conf := confmap.get(msg.key);
+            if conf.primary = self {   
+                sock.send(server(conf.secondary).sock.id,msg);
+                serialize(msg.key,self,conf.secondary,msg.src_client);   # ghost -- queue for commit
+            }
+            else if conf.secondary = self & ~conf.replicating {
+                if src = server(conf.primary).sock.id { 
+                    msg.kind := show_rsp_kind;
+                    msg.contents := table.get(msg.key);
+                    sock.send(server(conf.primary).sock.id,msg); 
+                    debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
+                    commit_one(msg.key); 
+                }
+            }
+        } else if msg.kind = show_rsp_kind { 
+            sock.send(client(msg.src_client).sock.id,msg); # Just forward it to client
+        } else if msg.kind = replicate_kind {
+
+            # If we get a `replicate` message it means we are the new secondary (even if
+            # we haven't gotten the announcement yet!). Set our contents to the contents
+            # of the message.
+
+            var conf := confmap.get(msg.key);
+            table.incorporate(msg.shard);   # NEW: incorporate new shard in table
+            conf.secondary := self;
+            conf.primary := msg.primary;
+            conf.replicating := false;   # now we are ready to handle show requests
+            confmap.set(msg.shard.lo,msg.shard.hi,conf);  # NEW: update configuration map
+            replicating := false;
+            while ~view_queue.empty & ~replicating {
+                process_view(view_queue.dequeue);
+            }
+        }
+    }
+
+    action process_view(msg:man_msg_t) = {
+        if msg.view = view+1 { # NEW -- ignore duplicate views
+            var conf := confmap.get(msg.lo.val);
+            
+            if msg.primary = self & conf.secondary ~= msg.secondary {
+                var rmsg : msg_t;
+                rmsg.kind := replicate_kind;
+                debug "get table" with val=table.get(3);
+                rmsg.shard := table.extract_(msg.lo,msg.hi); # NEW: extract shard from table
+                rmsg.primary := self;
+                debug "replicating" with primary = msg.primary, secondary = msg.secondary;
+                sock.send(server(msg.secondary).sock.id,rmsg);
+                var it := msg.lo;
+                while it < msg.hi {
+                    commit_all_serialized(it.val,self,conf.secondary);  # ghost call
+                    it := it.next;
+                }
+            }
+            # if we are the new secondary, wait for a replicate message
+            if self = msg.secondary & self ~= conf.secondary {
+                conf.replicating := true;
+                replicating := true;
+            }
+            # Now update our state...
+            view := msg.view;
+            conf.primary := msg.primary;
+            conf.secondary := msg.secondary;
+            confmap.set(msg.lo,msg.hi,conf);   # NEW set configuration of range
+            debug "new view" with server=self, lo = msg.lo, hi = msg.hi,
+            primary=conf.primary, secondary=conf.secondary;
+        }
+    }
+
+    implement man_sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+
+        # Here we handle an announcement message on the management overlay.
+        # If we are the new primary and there is a new secondary, we send
+        # our full contents to the secondary in a `replicate` message.
+
+        if replicating {
+            view_queue.enqueue(msg);
+        } else {
+            process_view(msg);
+        }
+    }
+
+    
+    # On a timer 'tick', we send a 'ping' to the manager
+    # with our current view number.
+
+    implement timer.timeout {
+        var msg : man_msg_t;
+        msg.view := view;
+        msg.src := self;
+        for it,mn in manager_id.iter {
+            man_sock.send(manager(mn).sock.id,msg);
+        }
+    }
+
+    # This ghost code is used to keep track of append requests that
+    # have been serialized at the primary, but not yet committed at the
+    # secondary.
+    
+    specification {
+        instance serialized(K:key_t) : unbounded_queue(client_id)
+        action commit_one(k:key_t) = {
+            if ~serialized(k).empty {
+                commit(serialized(k).dequeue);
+            }
+        }
+        common {
+            var true_primary(K:key_t) : server_id
+            
+            after init {
+                true_primary(K) := 0;
+            }
+            
+            action serialize(k:key_t,primary:server_id,secondary:server_id,src_client:client_id) = {
+                if primary = true_primary(k) {
+                    debug "serialize" with server = secondary, client = src_client;
+                    serialized(secondary,k).enqueue(src_client);
+                }
+            }
+            action commit_all_serialized(k:key_t,self:server_id, secondary:server_id) = {
+                while ~serialized(secondary,k).empty
+                decreases serialized(secondary,k).tail - serialized(secondary,k).head
+                {
+                    var cl := serialized(secondary,k).dequeue;
+                    if self = true_primary(k) {
+                        commit(cl);
+                    }
+                }
+                true_primary(k) := self;
+            }
+        }
+    }
+} with client.shard_t.kvt, client.shard_t.index
+
+}
+

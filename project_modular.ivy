@@ -1,0 +1,56 @@
+#lang ivy1.8
+
+# project
+#
+
+include linearizable_append
+include manager_process
+include client_server_network
+include management_network
+include server_process
+include client_implementation
+
+# We need one new library to provide a timer service:
+
+include timeout
+
+include global_types
+
+# We create a parameterized collection of client processes.
+
+process client (self:client_id) = {
+
+    # This is the interface we support
+
+    instantiate linearizable_append(client_id,key_t,byte,file)
+
+    # Here is the implementation:
+
+    implementation {
+
+        # These are the services we use
+
+        common {
+
+            instantiate client_config
+
+            instantiate management_network
+
+            instantiate manager_process
+
+            instantiate server_processes(commit)
+
+        }
+
+        instantiate client_implementation
+    }
+}
+
+# Now that we've fixed the ghost 'commit' sequence so that commits are not lost
+# when the secondary fails, let's test again for linearizability.
+#
+#     $ ivyc target=test project.ivy
+#     $ for run in {1..100}
+#     >     do ivy_launch server_id.max=3 client_id.max=1 seed=$run homework5
+#     > done
+#

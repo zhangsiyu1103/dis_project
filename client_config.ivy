@@ -1,0 +1,46 @@
+#lang ivy1.8
+
+include network
+include shard
+
+module client_server_network = {
+
+    global {
+        instance shard_t : table_shard(key_t, file)
+    }
+
+
+    class config = {
+        field primary : server_id
+        field secondary : server_id
+        filed replicating :bool
+    }
+
+
+
+    # Clients and servers communicate with each other using
+    # the following message kinds:
+
+    type msg_kind = {
+        append_req_kind,    # append request
+        append_rsp_kind,    # append response
+        show_req_kind,      # show request
+        show_rsp_kind,      # show response
+        replicate_kind      # server-to-server file transfer
+    }
+
+    # Here is the message class for client-server messages
+
+    class msg_t = {
+        field kind : msg_kind          # message kind
+        field val : byte               # byte to append (if any)
+        field contents : file          # file contents (if any)
+        field src_client : client_id   # requesting client id
+        field primary : server_id      # who is primary?
+    }
+
+    # Overlay for client-server messages
+
+    instance net : tcp_test.net(msg_t)
+
+}
