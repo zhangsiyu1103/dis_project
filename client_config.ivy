@@ -17,6 +17,18 @@ module client_server_network = {
     }
 
 
+    class server_config = {
+        field self_id : server_id
+        field relative_primary : server_id
+        field relative_secondary : server_id
+        field primary_lo : hash_t.iter.t
+        field primary_hi : hash_t.iter.t
+        field secondary_lo : hash_t.iter.t
+        field secondary_hi : hash_t.iter.t
+        field fail : bool
+    }
+
+
 
     # Clients and servers communicate with each other using
     # the following message kinds:

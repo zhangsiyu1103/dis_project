@@ -52,7 +52,7 @@ with value_t =
                 instance nset : indexset(node)
             }
             # This is an uninterpreted type of values to decide.
-            
+
             class vote_t = {
                 field accepted : bool
                 field src : node
@@ -157,10 +157,10 @@ with value_t =
             common {
                 private {
                     instance protocol : multi_paxos_abstract(node,value_t)
-                    
+
                     # The conformance property (every decision must also be
                     # made by the abstract model).
-                    
+
                     invariant decided(I) -> protocol.learn(I,decision(I))
                 }
             }
@@ -255,7 +255,7 @@ with value_t =
                     debug "propose" with leader = self, value = v, round = proposer_round, inst = next_inst;
                     send_proposal(next_inst,v);
                     next_inst := next_inst.next;
-                } 
+                }
             }
 
             # Now we have handlers for incoming messages. This one is for

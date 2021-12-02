@@ -1,26 +1,35 @@
 #lang ivy1.8
 include delmap
 include multi_paxos
+
+
+
+
 process manager(self:manager_id)  = {
 
     # The manager's state has the following elements:
 
     var view : nat                    # The current view number
     var time : nat                    # The current time in seconds
+    var change_amt : nat              # The amount of server moving
     var heard(X:server_id) : nat      # Last time we head from server `X`
+    var freqs(X:server_id) : nat      # frequency received from server `X`
     instance confmap : delegation_map(hash_t,config)   # NEW: the configuration map
     var proposed : bool               # Have we proposed a new view?
 
-    var used_server : vector(server_id);
+    var used_server : vector(server_id); # used server in the ring
+    var server_confs : vector(server_config)   #server idx and its coresponding primary range
+    #var primary_range : vector(Range)   #server idx and its coresponding primary range
+    #var secondary_range : vector(Range)  #server idx and its coresponding secondary range
 
     # There is also a parameter that determines how long to wait without a ping
     # before we conclude a server has failed. Notice this parameter has a default
     # value (2) but we can override it on the command line.
 
     common {
-    	parameter fail_time : nat = 2
-    	var server_in_ring = 4
-    	instance op_t : option(man_msg_t)
+        paramter server_in_ring : nat = 4
+        parameter fail_time : nat = 2
+        instance op_t : option(man_msg_t)
     }
 
     # The manager has a socket on the management network
@@ -38,31 +47,53 @@ process manager(self:manager_id)  = {
         time := 0;        # time is zero
         proposed := false;
         var conf : config;
+        var server_conf : server_config;
 
         # Initialize ring with hash code
         var primary := 0;
         var default_len := (hash_t.max+1)/server_in_ring;
 
-	assert hash_t.max+1 >= server_in_ring;
+        assert hash_t.max+1 >= server_in_ring;
+
+        used_server = used_server.create(server_in_ring,0)
+        server_confs = server_confs.create(server_in_ring, server_conf)
+        #secondary_range = secondary_range.create(server_in_ring,{0})
 
         var s := 0;
         var e := s + default_len-1;
+
+        change_amt := default_len / 4;
+
+        # This may looks confusing because ring idx and server id are the same. All vectors are actually indexed by server idx and id are subject to change
         while primary < server_in_ring{
-            used_server := used_server.append(primary);
+            used_server(primary) := primary
+            #used_server := used_server.append(primary);
             conf.primary := primary;
             conf.secondary := primary + 1;
             if conf.secondary == server_in_ring{
                 conf.secondary := 0;
             }
+
             conf.replicating := false;
             if e > hash_t.max{
-                e = hash_t.max
+                e = hash_t.max;
             }
+
+            # set range
+            server_confs(conf.primary).primary_lo := s;
+            server_confs(conf.primary).primary_hi := e;
+            server_confs(conf.secondary).secondary_lo := s;
+            server_confs(conf.secondary).secondary_hi := e;
+            # set id
+            server_confs(conf.primary).self_id := conf.primary;
+            server_confs(conf.primary).relative_secondary := conf.secondary;
+            server_confs(conf.secondary).relative_primary := conf.primary;
+
             confmap.set(s,e,conf);
             primary := primary + 1;
             s := e + 1;
             e := s + default_len-1;
-	}
+        }
     }
 
     # We say a server is 'up' if we have heard from it in
@@ -75,35 +106,14 @@ process manager(self:manager_id)  = {
 
     #TODO:  handle failstop of server
     implement timer.timeout {
-        debug "tick" with time = time, primary = heard(primary), secondary = heard(secondary), backup = heard(2);
+        debug "tick" with time = time;
         time := time + 1;         # increment the time
-
-        if ~is_up(primary) {
-
-            debug "primary failed";
-
-            if some (s:server_id) s ~= secondary & is_up(s) {
-
-                # Increment the view, promote the
-                # secondary to primary and let the fresh
-                # server `s` be the new
-                # secondary. Broadcast an announcement of
-                # this fact to all clients and servers.
-
-                view := view + 1;
-                primary := secondary;
-                secondary := s;
-                debug "primary failover" with new_primary = primary, new_secondary = secondary;
-                announce;
-            }
-        } else if ~is_up(secondary) {
-            debug "secondary failed";
-
-            if some (s:server_id) s ~= primary & is_up(s) {
-                view := view + 1;
-                secondary := s;
-                debug "secondary failover" with new_primary = primary, new_secondary = secondary;
-                announce;
+        for it, used_s in used_server{
+            if ~is_up(used_s) {
+                debug "server failed";
+                if some (s:server_id) s ~= used_s & is_up(s) {
+                    announce(view+1, it, s)
+                }
             }
         }
     }
@@ -123,18 +133,22 @@ process manager(self:manager_id)  = {
     # range is represented by a low key iterator and a
     # high key iterator.
 
-    action announce(view:nat, lo: hash_t.iter.t, hi:hash_t.iter.t, primary:server_id, secondary:server_id) = {
-	if ~proposed {
-	    var msg : man_msg_t;
-	    msg.view := view;
-	    msg.lo := lo;
-	    msg.hi := hi;
-	    msg.primary := primary;
-	    msg.secondary := secondary;
-	    # ask paxos to agree on our view change
-	    paxos.server.propose(client.manager.op_t.just(msg));
-	    proposed := true;
-	}
+    action announce(view:nat, ring_idx, server_idx) = {
+        if ~proposed {
+            var msg : man_msg_t;
+            var s_conf := server_confs(ring_idx);
+            if s == used_server(ring_idx) {
+                s_conf.fail := false;
+            } else {
+                s_conf.self_id := server_idx;
+                s_conf.fail := true;
+            }
+            msg.view := view;
+            msg.server_conf := s_conf;
+            # ask paxos to agree on our view change
+            paxos.server.propose(client.manager.op_t.just(msg));
+            proposed := true;
+        }
     }
 
     # On callback from Paxos we execute the view
@@ -150,19 +164,32 @@ process manager(self:manager_id)  = {
         proposed := false;
         if ~op.is_empty {
             var msg := op.contents;
+
+            assign_in_steps(msg);
+
+            var s_conf := msg.server_conf;
             var conf : config;
-            conf.primary := msg.primary;
-            conf.secondary := msg.secondary;
-            var hi := msg.hi;
-            while msg.lo < hi {
-                msg.hi := hi;
-                var lub := confmap.lub(msg.lo.next);
-                if lub < msg.hi {
-                    msg.hi := lub;
-                }
-                assign_in_steps(msg);
-                confmap.set(msg.lo,msg.hi,conf);
-                msg.lo := msg.hi;
+            conf.primary := s_conf.self_idx;
+            conf.secondary := s_conf.relative_secondary;
+            confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
+
+
+            conf.primary := s_conf.relative_primary;
+            conf.secondary := s_conf.self_idx;
+            confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
+
+
+
+            #var hi := msg.hi;
+            #while msg.lo < hi {
+            #    msg.hi := hi;
+            #    var lub := confmap.lub(msg.lo.next);
+            #    if lub < msg.hi {
+            #        msg.hi := lub;
+            #    }
+            #    assign_in_steps(msg);
+            #    confmap.set(msg.lo,msg.hi,conf);
+            #    msg.lo := msg.hi;
             }
         }
     }
@@ -173,14 +200,21 @@ process manager(self:manager_id)  = {
     # This lets us handle the view changes asynchronously as in HW #5.
     # The first step is needed only both the primary and secondary are changing.
 
+
+
+    # TODO coordinate with server replicating
     action assign_in_steps(msg:man_msg_t) = {
-        var config := confmap.get(msg.lo.val);  # get the old config
-        if config.primary ~= msg.primary & config.secondary ~= msg.primary {
-            var pmsg := msg;
-            pmsg.primary := config.primary;
-            pmsg.secondary := msg.primary; 
-            broadcast(pmsg);
-        }
+        #var config := confmap.get(msg.lo.val);  # get the old config
+
+        var s_conf := msg.server_conf;
+
+
+        #if config.primary ~= msg.primary & config.secondary ~= msg.primary {
+        #    var pmsg := msg;
+        #    pmsg.primary := config.primary;
+        #    pmsg.secondary := msg.primary; 
+        #    broadcast(pmsg);
+        #}
         broadcast(msg);
     }
 
@@ -204,7 +238,63 @@ process manager(self:manager_id)  = {
 
     implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
         if msg.view = view {
-            heard(msg.src) := time
+            heard(msg.src) := time;
+            freqs(msg.src) := msg.freq;
+
+            var min_freq : nat
+            var max_freq : nat
+            var min_idx : server_id
+            var max_idx : server_id
+            var prev_idx : server_id
+            var next_idx : server_id
+            var change_idx : server_id
+
+            min_freq := freqs(used_server(0));
+            max_freq := freqs(used_server(0));
+
+            for it, used_s in used_server{
+
+                if freqs(used_s) < min_freq{
+                    min_freq := freqs(used_s);
+                    min_idx := it;
+                }
+
+                if freqs(used_s) > max_freq{
+                    max_freq := freqs(used_s);
+                    max_idx := it;
+                }
+            }
+
+            if max_idx == 0{
+                prev_idx := server_in_ring - 1;
+            }else{
+                prev_idx := max_idx - 1;
+            }
+
+            if max_idx == server_in_ring - 1{
+                next_idx := 0;
+            }else{
+                next_idx := max_idx + 1;
+            }
+
+            if freq(prev_idx) < freq(next_idx){
+                server_confs(prev_idx).primary_hi := server_confs(prev_idx).primary_hi + change_amt;
+                server_confs(max_idx).primary_lo := server_confs(max_idx).primary_lo + change_amt;
+                server_confs(max_idx).secondary_hi := server_confs(max_idx).secondary_hi + change_amt;
+                change_idx := max_idx;
+            }else{
+                #change_idx := max_idx;
+                server_confs(max_idx).primary_hi := server_confs(prev_idx).primary_hi - change_amt;
+                server_confs(next_idx).primary_lo := server_confs(max_idx).primary_lo - change_amt;
+                server_confs(next_idx).secondary_hi := server_confs(max_idx).secondary_hi - change_amt;
+                change_idx := next_idx;
+            }
+
+
+            if min_freq > 1 & max_freq > 2*min_freq{
+                announce(view+1, change_idx, used_server(change_idx))
+            }
+
         }
     }
 
