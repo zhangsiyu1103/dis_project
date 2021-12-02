@@ -172,6 +172,7 @@ process manager(self:manager_id)  = {
             conf.primary := s_conf.self_idx;
             conf.secondary := s_conf.relative_secondary;
             confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
+	    # update server_confs;
 
 
             conf.primary := s_conf.relative_primary;
@@ -239,6 +240,8 @@ process manager(self:manager_id)  = {
     implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
         if msg.view = view {
             heard(msg.src) := time;
+
+
             freqs(msg.src) := msg.freq;
 
             var min_freq : nat
@@ -277,6 +280,8 @@ process manager(self:manager_id)  = {
                 next_idx := max_idx + 1;
             }
 
+
+            if min_freq > 1 & max_freq > 2*min_freq{
             if freq(prev_idx) < freq(next_idx){
                 server_confs(prev_idx).primary_hi := server_confs(prev_idx).primary_hi + change_amt;
                 server_confs(max_idx).primary_lo := server_confs(max_idx).primary_lo + change_amt;
@@ -289,9 +294,6 @@ process manager(self:manager_id)  = {
                 server_confs(next_idx).secondary_hi := server_confs(max_idx).secondary_hi - change_amt;
                 change_idx := next_idx;
             }
-
-
-            if min_freq > 1 & max_freq > 2*min_freq{
                 announce(view+1, change_idx, used_server(change_idx))
             }
 
