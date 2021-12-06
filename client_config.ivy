@@ -61,8 +61,10 @@ module client_server_network = {
 
     class msg_t = {
         field kind : msg_kind          # message kind
+        field key : key_t
         field val : byte               # byte to append (if any)
         field contents : file          # file contents (if any)
+        field shard : shard_t
         field src_client : client_id   # requesting client id
         field primary : server_id      # who is primary?
     }
