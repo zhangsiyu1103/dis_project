@@ -51,6 +51,7 @@ module client_server_network = {
         # manager network kind
         fail_kind,
         re_prepared_kind,
+        re_view_kind,
         re_abort_kind,
         re_ack_kind,
         ping_kind
