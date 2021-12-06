@@ -18,6 +18,7 @@ module client_server_network = {
 
 
     class server_config = {
+        field ring_id : nat
         field self_id : server_id
         field relative_primary : server_id
         field relative_secondary : server_id
@@ -25,7 +26,6 @@ module client_server_network = {
         field primary_hi : hash_t.iter.t
         field secondary_lo : hash_t.iter.t
         field secondary_hi : hash_t.iter.t
-        field fail : bool
     }
 
     class repartition_config = {
