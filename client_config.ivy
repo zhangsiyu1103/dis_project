@@ -28,6 +28,15 @@ module client_server_network = {
         field fail : bool
     }
 
+    class repartition_config = {
+        field lo : hash_t.iter.t
+        field hi : hash_t.iter.t
+        field old_p : server_id
+        field old_s : server_id
+        field new_p : server_id
+        field new_s : server_id
+    }
+
 
 
     # Clients and servers communicate with each other using
@@ -39,6 +48,12 @@ module client_server_network = {
         show_req_kind,      # show request
         show_rsp_kind,      # show response
         replicate_kind      # server-to-server file transfer
+        # manager network kind
+        fail_kind,
+        re_prepared_kind,
+        re_abort_kind,
+        re_ack_kind,
+        ping_kind
     }
 
     # Here is the message class for client-server messages

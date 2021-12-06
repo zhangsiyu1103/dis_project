@@ -8,12 +8,14 @@ module management_network = {
     class man_msg_t = {
         field view : nat               # the view number
         field time : nat               # the current time in seconds
+        field kind : msg_kind
         #field lo : hash_t.iter.t
         #field hi : hash_t.iter.t
         #field primary : server_id      # primary server id, if any
         #field secondary : server_id    # secondary server id, if any
 
         field server_conf : server_config
+        field re_config : repartition_config
         field src : server_id
 
         field freq : nat               # current frequency of hit
