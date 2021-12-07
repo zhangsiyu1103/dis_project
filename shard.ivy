@@ -9,15 +9,15 @@
 include order
 include collections
 
-module table_shard(key,data) = {
+module table_shard(key,hash,data) = {
 
     instance index : unbounded_sequence
     instance kvt : keyval(index,key.t,data)
 
     type this = struct {
-	lo : key.iter.t,
-	hi : key.iter.t,
-	kv : kvt.t
+    lo : hash,
+    hi : hash,
+    kv : kvt.t
     }
 
     relation key_at(S:this,I:index.t,X:key.t) = kv(S).key_at(I,X)

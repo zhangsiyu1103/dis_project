@@ -90,20 +90,20 @@ module hash_table(key,value,shard) = {
 
     implement extract_ {
         res.kv := shard.kvt.empty;
-            var idx := tab.lub(lo);
-            while idx < hi
-                invariant lo <= idx & (idx < hi -> tab.contains(idx.val))
-                invariant lo.between(X,idx) & tab.contains(X) -> 
-                               exists I. (res.key_at(I,X) & tab.maps(X,res.value_at(I)))
-                invariant res.key_at(I,X) -> lo.between(X,idx) & tab.contains(X)
-                invariant shard.valid(res)
-            {
-                var k := idx.val;
-                res.kv := res.kv.append_pair(k,tab.get(k,0));
-                idx := tab.next(idx)
-            };
-            res.lo := lo;
-            res.hi := hi;
+        var idx := tab.lub(lo);
+        while idx < hi
+            invariant lo <= idx & (idx < hi -> tab.contains(idx.val))
+            invariant lo.between(X,idx) & tab.contains(X) -> 
+                           exists I. (res.key_at(I,X) & tab.maps(X,res.value_at(I)))
+            invariant res.key_at(I,X) -> lo.between(X,idx) & tab.contains(X)
+            invariant shard.valid(res)
+        {
+            var k := idx.val;
+            res.kv := res.kv.append_pair(k,tab.get(k,0));
+            idx := tab.next(idx)
+        };
+        res.lo := lo;
+        res.hi := hi;
     }
 
     implement incorporate(s:shard) {

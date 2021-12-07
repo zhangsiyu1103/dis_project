@@ -22,20 +22,30 @@ module client_server_network = {
         field self_id : server_id
         field relative_primary : server_id
         field relative_secondary : server_id
-        field primary_lo : hash_t.iter.t
-        field primary_hi : hash_t.iter.t
-        field secondary_lo : hash_t.iter.t
-        field secondary_hi : hash_t.iter.t
+        field primary_lo : unsigned_bit_vector(8)
+        field primary_hi : unsigned_bit_vector(8)
+        field secondary_lo : unsigned_bit_vector(8)
+        field secondary_hi : unsigned_bit_vector(8)
     }
 
     class repartition_config = {
-        field lo : hash_t.iter.t
-        field hi : hash_t.iter.t
+        field lo : unsigned_bit_vector(8)
+        field hi : unsigned_bit_vector(8)
         field old_p : server_id
         field old_s : server_id
         field new_p : server_id
         field new_s : server_id
     }
+
+    #class copy_config = {
+    #    field lo : unsigned_bit_vector(8)
+    #    field hi : unsigned_bit_vector(8)
+    #    field src : server_id
+    #    field target : server_id
+    #    #field new_p : server_id
+    #    #field new_s : server_id
+    #}
+
 
 
 

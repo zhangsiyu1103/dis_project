@@ -3,19 +3,19 @@ include delmap
 include multi_paxos
 
 
-
-
 process manager(self:manager_id)  = {
 
     # The manager's state has the following elements:
 
     var view : nat                    # The current view number
     var time : nat                    # The current time in seconds
-    var change_amt : nat              # The amount of server moving
+    var re_start_time : nat
+    var change_amt : uint[8]          # The amount of server moving
     var heard(X:server_id) : nat      # Last time we head from server `X`
     var freqs(X:server_id) : nat      # frequency received from server `X`
     instance confmap : delegation_map(hash_t,config)   # NEW: the configuration map
     var proposed : bool               # Have we proposed a new view?
+    var repartition : bool            # Have we start a repartition
 
     var used_server : vector(server_id); # used server in the ring
     var server_confs : vector(server_config)   #server idx and its coresponding primary range
@@ -27,7 +27,7 @@ process manager(self:manager_id)  = {
     # value (2) but we can override it on the command line.
 
     common {
-        paramter server_in_ring : nat = 4
+        parameter server_in_ring : uint[8] = 4
         parameter fail_time : nat = 2
         instance op_t : option(man_msg_t)
     }
@@ -51,33 +51,34 @@ process manager(self:manager_id)  = {
 
         # Initialize ring with hash code
         var primary := 0;
-        var default_len := (hash_t.max+1)/server_in_ring;
+        #var default_len := (hash_t.max+1)/server_in_ring;
+        var default_len : uint[8] := hash_t_max/server_in_ring;
 
-        assert hash_t.max+1 >= server_in_ring;
+        assert hash_t_max >= server_in_ring;
 
         used_server = used_server.create(server_in_ring,0)
         server_confs = server_confs.create(server_in_ring, server_conf)
         #secondary_range = secondary_range.create(server_in_ring,{0})
 
-        var s := 0;
-        var e := s + default_len-1;
+        var s:uint[8] := 0;
+        var e:uint[8] := s + default_len-1;
 
         change_amt := default_len / 4;
 
         # This may looks confusing because ring idx and server id are the same. All vectors are actually indexed by server idx and id are subject to change
         while primary < server_in_ring{
-            used_server(primary) := primary
+            used_server(primary) := cast(primary)
             #used_server := used_server.append(primary);
-            conf.primary := primary;
-            conf.secondary := primary + 1;
+            conf.primary := cast(primary);
+            conf.secondary := cast(primary + 1);
             if conf.secondary == server_in_ring{
                 conf.secondary := 0;
             }
 
             conf.replicating := false;
-            if e > hash_t.max{
-                e = hash_t.max;
-            }
+            #if e > hash_t_max{
+            #    e = hash_t_max;
+            #}
 
             # set range
             server_confs(conf.primary).primary_lo := s;
@@ -91,8 +92,8 @@ process manager(self:manager_id)  = {
 
             confmap.set(s,e,conf);
             primary := primary + 1;
-            s := e + 1;
-            e := s + default_len-1;
+            s := mod(e + 1, hash_t_max);
+            e := mod(s + default_len-1, hash_t_max);
         }
     }
 
@@ -109,12 +110,28 @@ process manager(self:manager_id)  = {
         debug "tick" with time = time;
         time := time + 1;         # increment the time
         for it, used_s in used_server{
-            if ~is_up(used_s) {
+            if ~is_up(used_s) & ~repartititon {
                 debug "server failed";
                 if some (s:server_id) s ~= used_s & is_up(s) {
-                    announce(view+1, it, s)
+                    var msg : man_msg_t;
+                    var s_confs : vector(server_config)   #server idx and its coresponding primary range
+                    var s_conf := server_confs(it);
+                    s_conf.self_id := s;
+
+                    s_confs := s_confs.append(s_conf);
+
+                    msg.view := view+1;
+                    msg.kind = fail_kind;
+                    msg.server_confs := s_conf;
+                    announce(msg)
                 }
             }
+        }
+        if repartition & time > re_start_time + fail_time{
+            var msg : man_msg_t;
+            msg.kind = re_abort_kind;
+            announce(msg)
+
         }
     }
 
@@ -133,18 +150,8 @@ process manager(self:manager_id)  = {
     # range is represented by a low key iterator and a
     # high key iterator.
 
-    action announce(view:nat, ring_idx, server_idx) = {
+    action announce(msg:man_msg_t) = {
         if ~proposed {
-            var msg : man_msg_t;
-            var s_conf := server_confs(ring_idx);
-            if s == used_server(ring_idx) {
-                s_conf.fail := false;
-            } else {
-                s_conf.self_id := server_idx;
-                s_conf.fail := true;
-            }
-            msg.view := view;
-            msg.server_conf := s_conf;
             # ask paxos to agree on our view change
             paxos.server.propose(client.manager.op_t.just(msg));
             proposed := true;
@@ -165,32 +172,45 @@ process manager(self:manager_id)  = {
         if ~op.is_empty {
             var msg := op.contents;
 
-            assign_in_steps(msg);
+            if msg.kind = fail_kind{
+                broadcast(msg);
 
-            var s_conf := msg.server_conf;
-            var conf : config;
-            conf.primary := s_conf.self_idx;
-            conf.secondary := s_conf.relative_secondary;
-            confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
-	    # update server_confs;
+                var s_conf := msg.server_confs(0);
+                var conf : config;
+                server_confs(s_conf.ring_id) := s_conf;
+                used_server(s_conf.ring_d) := s_conf.self_id;
 
+                conf.primary := s_conf.self_id;
+                conf.secondary := s_conf.relative_secondary;
+                confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
 
-            conf.primary := s_conf.relative_primary;
-            conf.secondary := s_conf.self_idx;
-            confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
+                conf.primary := s_conf.relative_primary;
+                conf.secondary := s_conf.self_id;
+                confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
 
+            } else if msg.kind = re_view_kind{
+                broadcast(msg);
 
+                var s_confs := msg.server_confs;
+                var conf : config;
+                for it,s_conf in s_confs{
+                    server_confs(s_conf.ring_id) := s_conf;
+                    used_server(s_conf.ring_id) := s_conf.self_id;
 
-            #var hi := msg.hi;
-            #while msg.lo < hi {
-            #    msg.hi := hi;
-            #    var lub := confmap.lub(msg.lo.next);
-            #    if lub < msg.hi {
-            #        msg.hi := lub;
-            #    }
-            #    assign_in_steps(msg);
-            #    confmap.set(msg.lo,msg.hi,conf);
-            #    msg.lo := msg.hi;
+                    conf.primary := s_conf.self_id;
+                    conf.secondary := s_conf.relative_secondary;
+                    confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
+
+                    conf.primary := s_conf.relative_primary;
+                    conf.secondary := s_conf.self_id;
+                    confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
+
+            }else if msk.kind = re_prepare_kind{
+                repartition := true;
+                broadcast(msg);
+            }else if msg.kind = re_abort_kind{
+                repartition := false;
+                broadcast(msg);
             }
         }
     }
@@ -206,7 +226,6 @@ process manager(self:manager_id)  = {
     # TODO coordinate with server replicating
     action assign_in_steps(msg:man_msg_t) = {
         #var config := confmap.get(msg.lo.val);  # get the old config
-
         var s_conf := msg.server_conf;
 
 
@@ -221,8 +240,8 @@ process manager(self:manager_id)  = {
 
     action broadcast(msg:man_msg_t) = {
         debug "announce" with msg=msg;
-        view := view.next;
-        msg.view := view;
+        #view := view.next;
+        #msg.view := view;
         for it,cl in client_id.iter {
             sock.send(client(cl).man_sock.id,msg);
         }
@@ -238,66 +257,124 @@ process manager(self:manager_id)  = {
     # TODO: handle frequency and move server in ring
 
     implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+        if msg.kind = re_ack_kind & repartition{
+            var msg : man_msg_t;
+            msg.view := view+1;
+            msg.kind = re_view_kind;
+            msg.server_confs := re_server_confs;
+            announce(msg)
+        }
+
         if msg.view = view {
             heard(msg.src) := time;
 
-
             freqs(msg.src) := msg.freq;
 
-            var min_freq : nat
-            var max_freq : nat
-            var min_idx : server_id
-            var max_idx : server_id
-            var prev_idx : server_id
-            var next_idx : server_id
-            var change_idx : server_id
+            if ~repartition{
+                var min_freq : nat
+                var max_freq : nat
+                var min_idx : server_id
+                var max_idx : server_id
+                var prev_idx : server_id
+                var next_idx : server_id
+                var change_idx : server_id
 
-            min_freq := freqs(used_server(0));
-            max_freq := freqs(used_server(0));
+                min_freq := freqs(used_server(0));
+                max_freq := freqs(used_server(0));
 
-            for it, used_s in used_server{
+                for it, used_s in used_server{
 
-                if freqs(used_s) < min_freq{
-                    min_freq := freqs(used_s);
-                    min_idx := it;
+                    if freqs(used_s) < min_freq{
+                        min_freq := freqs(used_s);
+                        min_idx := it;
+                    }
+
+                    if freqs(used_s) > max_freq{
+                        max_freq := freqs(used_s);
+                        max_idx := it;
+                    }
                 }
 
-                if freqs(used_s) > max_freq{
-                    max_freq := freqs(used_s);
-                    max_idx := it;
+                if max_idx == 0{
+                    prev_idx := server_in_ring - 1;
+                }else{
+                    prev_idx := max_idx - 1;
                 }
-            }
 
-            if max_idx == 0{
-                prev_idx := server_in_ring - 1;
-            }else{
-                prev_idx := max_idx - 1;
-            }
-
-            if max_idx == server_in_ring - 1{
-                next_idx := 0;
-            }else{
-                next_idx := max_idx + 1;
-            }
+                if max_idx == server_in_ring - 1{
+                    next_idx := 0;
+                }else{
+                    next_idx := max_idx + 1;
+                }
 
 
-            if min_freq > 1 & max_freq > 2*min_freq{
-            if freq(prev_idx) < freq(next_idx){
-                server_confs(prev_idx).primary_hi := server_confs(prev_idx).primary_hi + change_amt;
-                server_confs(max_idx).primary_lo := server_confs(max_idx).primary_lo + change_amt;
-                server_confs(max_idx).secondary_hi := server_confs(max_idx).secondary_hi + change_amt;
-                change_idx := max_idx;
-            }else{
-                #change_idx := max_idx;
-                server_confs(max_idx).primary_hi := server_confs(prev_idx).primary_hi - change_amt;
-                server_confs(next_idx).primary_lo := server_confs(max_idx).primary_lo - change_amt;
-                server_confs(next_idx).secondary_hi := server_confs(max_idx).secondary_hi - change_amt;
-                change_idx := next_idx;
-            }
-                announce(view+1, change_idx, used_server(change_idx))
-            }
+                if min_freq > 1 & max_freq > 2*min_freq{
+                    var msg : man_msg_t;
+                    var s_confs : vector(server_config)   #server idx and its coresponding primary range
+                    var re_conf : repartition_config;
 
-        }
+                    s_confs := s_confs.append(s_conf);
+
+                    msg.view := view+1;
+
+                    if freq(prev_idx) < freq(next_idx){
+                        var s_conf1 := server_confs(prev_idx);
+                        var s_conf2 := server_confs(max_idx);
+                        var s_conf3 := server_confs(next_idx);
+
+                        re_conf.old_p := used_server(max_idx);
+                        re_conf.old_s := used_server(next_idx);
+                        re_conf.new_p := used_server(prev_idx);
+                        re_conf.new_s := used_server(max_idx);
+
+                        re_conf.lo := s_conf2.primary_lo;
+
+                        s_conf1.primary_hi := mod(s_conf1.primary_hi + change_amt,hash_t_max);
+                        s_conf2.secondary_hi := mod(s_conf2.secondary_hi + change_amt, hash_t_max);
+                        s_conf2.primary_lo := mod(s_conf2.primary_lo + change_amt, hash_t_max);
+                        s_conf3.secondary_lo := mod(s_conf2.secondary_lo + change_amt, hash_t_max);
+
+                        re_conf.hi := mod(s_conf2.primary_lo-1,hash_t_max);
+
+                        s_confs := s_confs.append(s_conf1);
+                        s_confs := s_confs.append(s_conf2);
+                        s_confs := s_confs.append(s_conf3);
+
+                        re_server_confs := s_confs;
+                    }else{
+                        var s_conf1 := server_confs(max_idx);
+                        var s_conf2 := server_confs(next_idx);
+                        var s_conf3 := server_confs(next_idx.next);
+
+                        re_conf.old_p := used_server(max_idx);
+                        re_conf.old_s := used_server(next_idx);
+                        re_conf.new_p := used_server(next_idx);
+                        re_conf.new_s := used_server(next_idx.next);
+
+                        re_conf.hi := s_conf1.primary_hi;
+
+                        s_conf1.primary_hi := mod(s_conf1.primary_hi - change_amt, hash_t_max);
+                        s_conf2.secondary_hi := mod(s_conf2.secondary_hi - change_amt, hash_t_max);
+                        s_conf2.primary_lo := mod(s_conf2.primary_lo - change_amt, hash_t_max);
+                        s_conf3.secondary_lo := mod(s_conf2.secondary_lo - change_amt, hash_t_max);
+
+                        re_conf.lo := mod(s_conf1.primary_hi + 1, hash_t_max);
+
+                        s_confs := s_confs.append(s_conf1);
+                        s_confs := s_confs.append(s_conf2);
+                        s_confs := s_confs.append(s_conf3);
+
+                        re_server_confs := s_confs;
+                    }
+
+                    re_start_time := time;
+                    msg.kind = reprepared_kind;
+                    #msg.server_confs := s_confs;
+                    msg.re_config := re_conf;
+                    announce(msg)
+                }
+
+            }
     }
 
     # NEW: here is the Multi-Paxos instantiation:

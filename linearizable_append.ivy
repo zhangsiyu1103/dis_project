@@ -9,7 +9,7 @@ module linearizable_append(client_id,key_t,byte,file) = {
     import action append_rsp
     export action show_req(key:ket_t)
     import action show_rsp(content:file)
-    
+
     # This is our linearizability spec, same as before.
 
     common {

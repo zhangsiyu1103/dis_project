@@ -24,5 +24,6 @@ global {
     instance file : vector(byte)
 
     instance key_t: iterable
-    instance hash_t: iterable
+    instance hash_t: unsigned_bit_vector(8)
+    var hash_t_max: unsigned_bit_vector(8) := hash_max
 }

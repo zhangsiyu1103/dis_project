@@ -18,6 +18,18 @@ include global_types
 
 # We create a parameterized collection of client processes.
 
+action mod(x:uint[8],y:uint[8]) return(z:uint[8]) = {
+    z := x-x/y*y;
+}
+
+function key_hash(X:key_t):hash_t
+
+after init {
+    for it,i in key_t.iter {
+        key_hash(i) := mod(hash_t.random, hash_t_max);
+    }
+}
+
 process client (self:client_id) = {
 
     # This is the interface we support
