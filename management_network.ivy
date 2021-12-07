@@ -10,7 +10,7 @@ module management_network = {
         field time : nat               # the current time in seconds
         field kind : msg_kind
 
-        field server_confs : vector(server_config)
+        field server_conf : server_config
         field re_config : repartition_config
         #field new_conf : vector
         #field copy_confs : vector(copy_config)

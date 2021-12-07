@@ -19,6 +19,7 @@ process manager(self:manager_id)  = {
 
     var used_server : vector(server_id); # used server in the ring
     var server_confs : vector(server_config)   #server idx and its coresponding primary range
+    var re_server_conf : server_config
     #var primary_range : vector(Range)   #server idx and its coresponding primary range
     #var secondary_range : vector(Range)  #server idx and its coresponding secondary range
 
@@ -27,7 +28,7 @@ process manager(self:manager_id)  = {
     # value (2) but we can override it on the command line.
 
     common {
-        parameter server_in_ring : uint[8] = 4
+        parameter server_in_ring : server_id = 4
         parameter fail_time : nat = 2
         instance op_t : option(man_msg_t)
     }
@@ -50,14 +51,14 @@ process manager(self:manager_id)  = {
         var server_conf : server_config;
 
         # Initialize ring with hash code
-        var primary := 0;
+        var primary :server_id= 0;
         #var default_len := (hash_t.max+1)/server_in_ring;
-        var default_len : uint[8] := hash_t_max/server_in_ring;
+        var default_len : uint[8] := hash_t_max/cast(server_in_ring);
 
-        assert hash_t_max >= server_in_ring;
+        assert hash_t_max >= cast(server_in_ring);
 
-        used_server = used_server.create(server_in_ring,0)
-        server_confs = server_confs.create(server_in_ring, server_conf)
+        used_server = used_server.create(cast(server_in_ring),0)
+        server_confs = server_confs.create(cast(server_in_ring), server_conf)
         #secondary_range = secondary_range.create(server_in_ring,{0})
 
         var s:uint[8] := 0;
@@ -67,10 +68,10 @@ process manager(self:manager_id)  = {
 
         # This may looks confusing because ring idx and server id are the same. All vectors are actually indexed by server idx and id are subject to change
         while primary < server_in_ring{
-            used_server(primary) := cast(primary)
+            used_server(primary) := primary
             #used_server := used_server.append(primary);
-            conf.primary := cast(primary);
-            conf.secondary := cast(primary + 1);
+            conf.primary := primary;
+            conf.secondary := primary + 1;
             if conf.secondary == server_in_ring{
                 conf.secondary := 0;
             }
@@ -114,15 +115,13 @@ process manager(self:manager_id)  = {
                 debug "server failed";
                 if some (s:server_id) s ~= used_s & is_up(s) {
                     var msg : man_msg_t;
-                    var s_confs : vector(server_config)   #server idx and its coresponding primary range
                     var s_conf := server_confs(it);
                     s_conf.self_id := s;
 
-                    s_confs := s_confs.append(s_conf);
 
                     msg.view := view+1;
                     msg.kind = fail_kind;
-                    msg.server_confs := s_conf;
+                    msg.server_conf := s_conf;
                     announce(msg)
                 }
             }
@@ -175,7 +174,7 @@ process manager(self:manager_id)  = {
             if msg.kind = fail_kind{
                 broadcast(msg);
 
-                var s_conf := msg.server_confs(0);
+                var s_conf := msg.server_conf;
                 var conf : config;
                 server_confs(s_conf.ring_id) := s_conf;
                 used_server(s_conf.ring_d) := s_conf.self_id;
@@ -191,19 +190,18 @@ process manager(self:manager_id)  = {
             } else if msg.kind = re_view_kind{
                 broadcast(msg);
 
-                var s_confs := msg.server_confs;
+                var s_conf := msg.server_conf;
                 var conf : config;
-                for it,s_conf in s_confs{
-                    server_confs(s_conf.ring_id) := s_conf;
-                    used_server(s_conf.ring_id) := s_conf.self_id;
+                server_confs(s_conf.ring_id) := s_conf;
+                used_server(s_conf.ring_id) := s_conf.self_id;
 
-                    conf.primary := s_conf.self_id;
-                    conf.secondary := s_conf.relative_secondary;
-                    confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
+                conf.primary := s_conf.self_id;
+                conf.secondary := s_conf.relative_secondary;
+                confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
 
-                    conf.primary := s_conf.relative_primary;
-                    conf.secondary := s_conf.self_id;
-                    confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
+                conf.primary := s_conf.relative_primary;
+                conf.secondary := s_conf.self_id;
+                confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
 
             }else if msk.kind = re_prepare_kind{
                 repartition := true;
@@ -261,11 +259,11 @@ process manager(self:manager_id)  = {
             var msg : man_msg_t;
             msg.view := view+1;
             msg.kind = re_view_kind;
-            msg.server_confs := re_server_confs;
+            msg.server_conf := re_server_conf;
             announce(msg)
         }
 
-        if msg.view = view {
+        if msg.kind = ping_king & msg.view = view {
             heard(msg.src) := time;
 
             freqs(msg.src) := msg.freq;
@@ -310,17 +308,15 @@ process manager(self:manager_id)  = {
 
                 if min_freq > 1 & max_freq > 2*min_freq{
                     var msg : man_msg_t;
-                    var s_confs : vector(server_config)   #server idx and its coresponding primary range
+					#var s_confs : vector(server_config)   #server idx and its coresponding primary range
                     var re_conf : repartition_config;
 
-                    s_confs := s_confs.append(s_conf);
+					#s_confs := s_confs.append(s_conf);
 
                     msg.view := view+1;
 
                     if freq(prev_idx) < freq(next_idx){
-                        var s_conf1 := server_confs(prev_idx);
                         var s_conf2 := server_confs(max_idx);
-                        var s_conf3 := server_confs(next_idx);
 
                         re_conf.old_p := used_server(max_idx);
                         re_conf.old_s := used_server(next_idx);
@@ -329,47 +325,40 @@ process manager(self:manager_id)  = {
 
                         re_conf.lo := s_conf2.primary_lo;
 
-                        s_conf1.primary_hi := mod(s_conf1.primary_hi + change_amt,hash_t_max);
                         s_conf2.secondary_hi := mod(s_conf2.secondary_hi + change_amt, hash_t_max);
                         s_conf2.primary_lo := mod(s_conf2.primary_lo + change_amt, hash_t_max);
-                        s_conf3.secondary_lo := mod(s_conf2.secondary_lo + change_amt, hash_t_max);
 
-                        re_conf.hi := mod(s_conf2.primary_lo-1,hash_t_max);
+                        re_conf.hi := s_conf2.secondary_hi;
 
-                        s_confs := s_confs.append(s_conf1);
-                        s_confs := s_confs.append(s_conf2);
-                        s_confs := s_confs.append(s_conf3);
 
-                        re_server_confs := s_confs;
+                        re_server_conf := s_conf;
                     }else{
-                        var s_conf1 := server_confs(max_idx);
-                        var s_conf2 := server_confs(next_idx);
-                        var s_conf3 := server_confs(next_idx.next);
+						var s_conf2 := server_confs(next_idx);
 
                         re_conf.old_p := used_server(max_idx);
                         re_conf.old_s := used_server(next_idx);
                         re_conf.new_p := used_server(next_idx);
-                        re_conf.new_s := used_server(next_idx.next);
+						var new_s: server_id;
+						if next_idx = server_in_ring{
+							new_s := 0;
+						}else{
+							new_s := next_idx.next;
+						}
+                        re_conf.new_s := used_server(new_s);
 
-                        re_conf.hi := s_conf1.primary_hi;
+                        re_conf.hi := s_conf2.secondary_hi;
 
-                        s_conf1.primary_hi := mod(s_conf1.primary_hi - change_amt, hash_t_max);
                         s_conf2.secondary_hi := mod(s_conf2.secondary_hi - change_amt, hash_t_max);
                         s_conf2.primary_lo := mod(s_conf2.primary_lo - change_amt, hash_t_max);
-                        s_conf3.secondary_lo := mod(s_conf2.secondary_lo - change_amt, hash_t_max);
 
-                        re_conf.lo := mod(s_conf1.primary_hi + 1, hash_t_max);
+                        re_conf.lo := s_conf2.primary_lo;
 
-                        s_confs := s_confs.append(s_conf1);
-                        s_confs := s_confs.append(s_conf2);
-                        s_confs := s_confs.append(s_conf3);
 
-                        re_server_confs := s_confs;
+                        re_server_conf := s_conf;
                     }
 
                     re_start_time := time;
                     msg.kind = reprepared_kind;
-                    #msg.server_confs := s_confs;
                     msg.re_config := re_conf;
                     announce(msg)
                 }
