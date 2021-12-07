@@ -77,9 +77,6 @@ process manager(self:manager_id)  = {
             }
 
             conf.replicating := false;
-            #if e > hash_t_max{
-            #    e = hash_t_max;
-            #}
 
             # set range
             server_confs(conf.primary).primary_lo := s;
@@ -93,8 +90,8 @@ process manager(self:manager_id)  = {
 
             confmap.set(s,e,conf);
             primary := primary + 1;
-            s := mod(e + 1, hash_t_max);
-            e := mod(s + default_len-1, hash_t_max);
+            s := e + 1;
+            e := s + default_len-1;
         }
     }
 
@@ -122,14 +119,14 @@ process manager(self:manager_id)  = {
                     msg.view := view+1;
                     msg.kind = fail_kind;
                     msg.server_conf := s_conf;
-                    announce(msg)
+                    announce(msg);
                 }
             }
         }
         if repartition & time > re_start_time + fail_time{
             var msg : man_msg_t;
             msg.kind = re_abort_kind;
-            announce(msg)
+            announce(msg);
 
         }
     }
@@ -260,7 +257,7 @@ process manager(self:manager_id)  = {
             msg.view := view+1;
             msg.kind = re_view_kind;
             msg.server_conf := re_server_conf;
-            announce(msg)
+            announce(msg);
         }
 
         if msg.kind = ping_king & msg.view = view {
@@ -271,11 +268,12 @@ process manager(self:manager_id)  = {
             if ~repartition{
                 var min_freq : nat
                 var max_freq : nat
-                var min_idx : server_id
-                var max_idx : server_id
-                var prev_idx : server_id
-                var next_idx : server_id
-                var change_idx : server_id
+                var min_idx : nat
+                var max_idx : nat
+                var prev_idx : nat 
+                var next_idx : nat
+                var change_idx : nat
+				var len: nat := cast(server_in_ring);
 
                 min_freq := freqs(used_server(0));
                 max_freq := freqs(used_server(0));
@@ -293,17 +291,9 @@ process manager(self:manager_id)  = {
                     }
                 }
 
-                if max_idx == 0{
-                    prev_idx := server_in_ring - 1;
-                }else{
-                    prev_idx := max_idx - 1;
-                }
-
-                if max_idx == server_in_ring - 1{
-                    next_idx := 0;
-                }else{
-                    next_idx := max_idx + 1;
-                }
+				prev_idx:= (max_idx - 1).mod(len);
+				next_idx:= (max_idx + 1).mod(len);
+				next_next_idx:= (next_idx + 1).mod(len);
 
 
                 if min_freq > 1 & max_freq > 2*min_freq{
@@ -316,43 +306,35 @@ process manager(self:manager_id)  = {
                     msg.view := view+1;
 
                     if freq(prev_idx) < freq(next_idx){
-                        var s_conf2 := server_confs(max_idx);
+                        var s_conf := server_confs(max_idx);
 
                         re_conf.old_p := used_server(max_idx);
                         re_conf.old_s := used_server(next_idx);
                         re_conf.new_p := used_server(prev_idx);
                         re_conf.new_s := used_server(max_idx);
 
-                        re_conf.lo := s_conf2.primary_lo;
+                        re_conf.lo := s_conf.primary_lo;
 
-                        s_conf2.secondary_hi := mod(s_conf2.secondary_hi + change_amt, hash_t_max);
-                        s_conf2.primary_lo := mod(s_conf2.primary_lo + change_amt, hash_t_max);
+                        s_conf.secondary_hi := s_conf.secondary_hi + change_amt;
+                        s_conf.primary_lo := s_conf.primary_lo + change_amt;
 
-                        re_conf.hi := s_conf2.secondary_hi;
-
+                        re_conf.hi := s_conf.secondary_hi;
 
                         re_server_conf := s_conf;
                     }else{
-						var s_conf2 := server_confs(next_idx);
+						var s_conf := server_confs(next_idx);
 
                         re_conf.old_p := used_server(max_idx);
                         re_conf.old_s := used_server(next_idx);
                         re_conf.new_p := used_server(next_idx);
-						var new_s: server_id;
-						if next_idx = server_in_ring{
-							new_s := 0;
-						}else{
-							new_s := next_idx.next;
-						}
-                        re_conf.new_s := used_server(new_s);
+                        re_conf.new_s := used_server(next_next_idx);
 
-                        re_conf.hi := s_conf2.secondary_hi;
+                        re_conf.hi := s_conf.secondary_hi;
 
-                        s_conf2.secondary_hi := mod(s_conf2.secondary_hi - change_amt, hash_t_max);
-                        s_conf2.primary_lo := mod(s_conf2.primary_lo - change_amt, hash_t_max);
+                        s_conf.secondary_hi := s_conf.secondary_hi - change_amt;
+                        s_conf.primary_lo := s_conf.primary_lo - change_amt;
 
-                        re_conf.lo := s_conf2.primary_lo;
-
+                        re_conf.lo := s_conf.primary_lo;
 
                         re_server_conf := s_conf;
                     }
@@ -360,7 +342,7 @@ process manager(self:manager_id)  = {
                     re_start_time := time;
                     msg.kind = reprepared_kind;
                     msg.re_config := re_conf;
-                    announce(msg)
+                    announce(msg);
                 }
 
             }
