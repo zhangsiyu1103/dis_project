@@ -57,14 +57,8 @@ module client_server_network = {
         append_rsp_kind,    # append response
         show_req_kind,      # show request
         show_rsp_kind,      # show response
-        replicate_kind      # server-to-server file transfer
-        # manager network kind
-        fail_kind,
-        re_prepared_kind,
-        re_view_kind,
-        re_abort_kind,
-        re_ack_kind,
-        ping_kind
+        replicate_kind      # server-to-server file transfer during failover
+        re_replicate_kind   # server-to-server file transfer durig repartition
     }
 
     # Here is the message class for client-server messages
@@ -77,6 +71,8 @@ module client_server_network = {
         field shard : shard_t
         field src_client : client_id   # requesting client id
         field primary : server_id      # who is primary?
+
+        field tcp_src : tcp.endpoint   # tcp source of this message
     }
 
     # Overlay for client-server messages

@@ -5,13 +5,27 @@ module management_network = {
     # Management messages (announcements and pings) have the
     # following structure:
 
+
+    # Managers and servers communicate with each other using
+    # the following message kinds:
+
+    type man_msg_kind = {
+        fail_kind,              # manager announces a new view due to a failed server
+        re_prepare_kind,        # manager prepares servers with a re-partition
+        re_view_kind            # manager announces a new view due to a successful repartition preparation
+        re_abort_kind,          # manager aborts an outstanding repartition preparation
+        re_ack_kind,            # server acknowledges to manager replication is completed for repartition
+        ping_kind               # server pings manager to say "I'm still alive"
+    }
+
+
     class man_msg_t = {
         field view : nat               # the view number
         field time : nat               # the current time in seconds
-        field kind : msg_kind
+        field kind : man_msg_kind
 
-        field server_conf : server_config
-        field re_config : repartition_config
+        field server_conf : server_config       # used for "fail_kind" msg
+        field re_conf : repartition_config    # used for all "re_*_kind" msg
         #field new_conf : vector
         #field copy_confs : vector(copy_config)
         field src : server_id
