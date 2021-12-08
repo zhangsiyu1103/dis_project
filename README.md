@@ -9,3 +9,18 @@ server process to make it work. Ken said he would update operation for keyval to
 6. Handle all request from manage network and implement queue to block data
 #3. The details of frequency detection and threshold, route response to primary before commit, client
 #delmap representation and add mod hash function when client send requests.
+
+
+Question:
+During the rerouting protocl, does each server check before sending append_rsp?
+
+
+For Siyu:
+# change how to update view on the manager side
+
+For Xiang:
+# fail_kind handling logic (need to copy from two servers)
+# move can be to the left or right -> so need to distinguish two cases
+# Implement the rerouting protocol
+# table_shard declared with correct type
+# hash_table needs to be modified with the idea of nested mapping

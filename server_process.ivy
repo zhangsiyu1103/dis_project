@@ -267,6 +267,7 @@ process server(self:server_id) = {
 
     implement timer.timeout {
         var msg : man_msg_t;
+        msg.kind := ping_kind;
         msg.view := view;
         msg.src := self;
         msg.freq := freq;
