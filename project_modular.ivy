@@ -25,8 +25,8 @@ action mod(x:uint[8],y:uint[8]) return(z:uint[8]) = {
 function key_hash(X:key_t):hash_t
 
 after init {
-	hash_t_max := 0-1;
-	for it,i in key_t.iter {
+    hash_t_max := 0-1;
+    for it,i in key_t.iter {
         key_hash(i) := hash_t.random;
     }
 }

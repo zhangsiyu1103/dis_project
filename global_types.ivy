@@ -25,6 +25,8 @@ global {
 
     instance key_t: iterable
     instance hash_t: unsigned_bit_vector(8)
-	#var hash_t_max: unsigned_bit_vector(8) := hash_max
-	var hash_t_max: uint[8]
+    #var hash_t_max: unsigned_bit_vector(8) := hash_max
+    instance index : unbounded_sequence
+    instance kvt : keyval(index, key_t.t, file)
+    var hash_t_max: uint[8]
 }

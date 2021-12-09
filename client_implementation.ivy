@@ -17,15 +17,15 @@ module client_implementation = {
     # By agreement, these are 0,1 initially.
 
     after init {
-
-        var primary := 0
+        var server_in_ring: server_id := 4;
+        var primary:server_id := 0;
         var default_len : uint[8] := hash_t_max/server_in_ring;
         var s:uint[8] := 0;
         var e:uint[8] := s + default_len-1;
         while primary < server_in_ring{
-            conf.primary := cast(primary);
-            conf.secondary := cast(primary + 1);
-            if conf.secondary == server_in_ring{
+            conf.primary := primary;
+            conf.secondary := primary + 1;
+            if conf.secondary = server_in_ring{
                 conf.secondary := 0;
             }
 
@@ -33,14 +33,9 @@ module client_implementation = {
 
             confmap.set(s,e,conf);
             primary := primary + 1;
-            s := mod(e + 1, hash_t_max);
-            e := mod(s + default_len-1, hash_t_max);
+            s := e + 1;
+            e := s + default_len-1;
         }
-        var conf : config;
-        conf.primary := 0;
-        conf.secondary := 1;
-        conf.replicating := false;
-        confmap.set(key_t.iter.begin,key_t.iter.end,conf);
     }
 
     # When the client gets an append request, it sends an append
@@ -51,8 +46,9 @@ module client_implementation = {
         msg.kind := append_req_kind;
         msg.src_client := self;
         msg.key := key;
+        msg.hash := key_hash(key);
         msg.val := val;
-        var conf := confmap.get(key);
+        var conf := confmap.get(msg.hash);
         var primary := conf.primary;  # Get the primary for this key
         sock.send(server(primary).sock.id, msg);
     }
@@ -67,7 +63,8 @@ module client_implementation = {
         msg.kind := show_req_kind;
         msg.src_client := self;
         msg.key := key;
-        var conf := confmap.get(key);
+        msg.hash := key_hash(key);
+        var conf := confmap.get(msg.hash);
         var primary := conf.primary;  # Get the primary for this key
         sock.send(server(primary).sock.id, msg);
     }
@@ -90,10 +87,18 @@ module client_implementation = {
     # need to record the view number, as the client doesn't use it).
 
     implement man_sock.recv(src:tcp.endpoint,msg:man_msg_t) {
-        var conf : config;
-        conf.primary := msg.primary;
-        conf.secondary := msg.secondary;
-        confmap.set(msg.lo,msg.hi,conf);
-        debug "new view" with client=self, lo=msg.lo, hi=msg.hi, primary=msg.primary, secondary=msg.secondary
+        if msg.kind = fail_kind | msg.kind = re_view_kind{
+            var conf : config;
+            var s_conf := msg.server_conf;
+
+            conf.primary := msg.relative_primary;
+            conf.secondary := msg.self_id;
+            confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
+
+            conf.primary := msg.self_id;
+            conf.secondary := msg.relative_secondary;
+            confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
+            debug "new view" with client=self, s_conf = s_conf
+        }
     }
 }

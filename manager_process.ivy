@@ -116,7 +116,6 @@ process manager(self:manager_id)  = {
                     s_conf.self_id := s;
 
 
-                    msg.view := view+1;
                     msg.kind = fail_kind;
                     msg.server_conf := s_conf;
                     announce(msg);
@@ -169,6 +168,8 @@ process manager(self:manager_id)  = {
             var msg := op.contents;
 
             if msg.kind = fail_kind{
+                msg.view := view.next;
+                view := msg.view;
                 broadcast(msg);
 
                 var s_conf := msg.server_conf;
@@ -185,6 +186,8 @@ process manager(self:manager_id)  = {
                 confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
 
             } else if msg.kind = re_view_kind{
+                msg.view := view.next;
+                view := msg.view;
                 broadcast(msg);
 
                 var s_conf := msg.server_conf;
@@ -254,7 +257,6 @@ process manager(self:manager_id)  = {
     implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
         if msg.kind = re_ack_kind & repartition{
             var msg : man_msg_t;
-            msg.view := view+1;
             msg.kind = re_view_kind;
             msg.server_conf := re_server_conf;
             announce(msg);
@@ -273,7 +275,7 @@ process manager(self:manager_id)  = {
                 var prev_idx : nat 
                 var next_idx : nat
                 var change_idx : nat
-				var len: nat := cast(server_in_ring);
+                var len: nat := cast(server_in_ring);
 
                 min_freq := freqs(used_server(0));
                 max_freq := freqs(used_server(0));
@@ -291,19 +293,18 @@ process manager(self:manager_id)  = {
                     }
                 }
 
-				prev_idx:= (max_idx - 1).mod(len);
-				next_idx:= (max_idx + 1).mod(len);
-				next_next_idx:= (next_idx + 1).mod(len);
+                prev_idx:= (max_idx - 1).mod(len);
+                next_idx:= (max_idx + 1).mod(len);
+                next_next_idx:= (next_idx + 1).mod(len);
 
 
                 if min_freq > 1 & max_freq > 2*min_freq{
                     var msg : man_msg_t;
-					#var s_confs : vector(server_config)   #server idx and its coresponding primary range
+                    #var s_confs : vector(server_config)   #server idx and its coresponding primary range
                     var re_conf : repartition_config;
 
-					#s_confs := s_confs.append(s_conf);
+                    #s_confs := s_confs.append(s_conf);
 
-                    msg.view := view+1;
 
                     if freq(prev_idx) < freq(next_idx){
                         var s_conf := server_confs(max_idx);
@@ -322,7 +323,7 @@ process manager(self:manager_id)  = {
 
                         re_server_conf := s_conf;
                     }else{
-						var s_conf := server_confs(next_idx);
+                        var s_conf := server_confs(next_idx);
 
                         re_conf.old_p := used_server(max_idx);
                         re_conf.old_s := used_server(next_idx);

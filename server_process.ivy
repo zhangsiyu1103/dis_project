@@ -12,7 +12,7 @@ process server(self:server_id) = {
 
     # The state of a server consists of:
 
-    instance table : hash_table(key_t,file,shard_t)     # key/value replica
+    instance table : hash_table(hash_t,kvt,shard_t)     # key/value replica
     var view : nat                                      # the current view
     instance confmap : delegation_map(hash_t,config)    # peer servers' configurations
     instance timer : timeout_sec                        # timer for ping messages
@@ -34,7 +34,7 @@ process server(self:server_id) = {
         conf.primary := 0;
         conf.secondary := 1;
         conf.replicating := false;
-    	confmap.set(key_t.iter.begin,key_t.iter.end,conf);
+        confmap.set(key_t.iter.begin,key_t.iter.end,conf);
         view := 0;
         replicating := false;
 
@@ -304,6 +304,21 @@ process server(self:server_id) = {
                 while ~serialized(secondary,k).empty
                 decreases serialized(secondary,k).tail - serialized(secondary,k).head
                 {
+                invariant 0 <= pos & pos <= s.kv.end
+                invariant lo.between(X,hi) & s.value(X) = 0 -> ~tab.contains(X)
+                invariant lo.between(X,hi) & 0 <= Y & Y < pos & s.key_at(Y,X) & s.value(X) ~= 0
+                                 -> tab.contains(X) & tab.maps(X,s.value(X))
+                invariant ~lo.between(X,hi) -> spec.tab_invar(X,Y)
+                # following are object invariants of tab and shouldn't be needed here
+                invariant tab.maps(X,Y) & tab.maps(X,Z) -> Y = Z & tab.contains(X)
+            {
+                var k := s.kv.get_key(pos);
+                var d := s.kv.get_value(pos);
+                if lo.between(k,hi) & d ~= 0{
+                    call tab.set(k,d)
+                };
+                pos := pos.next
+            }
                     var cl := serialized(secondary,k).dequeue;
                     if self = true_primary(k) {
                         commit(cl);
