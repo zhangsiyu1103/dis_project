@@ -24,8 +24,8 @@ module management_network = {
         field time : nat               # the current time in seconds
         field kind : man_msg_kind
 
-        field server_conf : server_config       # used for "fail_kind" msg
-        field re_conf : repartition_config    # used for all "re_*_kind" msg
+        field server_conf : server_config       # used for "fail_kind", "re_view_kind" msg
+        field re_conf : repartition_config    # used for "re_prepare_kind"
         #field new_conf : vector
         #field copy_confs : vector(copy_config)
         field src : server_id

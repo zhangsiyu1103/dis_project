@@ -17,7 +17,7 @@ process server(self:server_id) = {
     instance confmap : delegation_map(hash_t,config)    # peer servers' configurations
     instance timer : timeout_sec                        # timer for ping messages
     instance man_msg_queue : unbounded_queue(man_msg_t) # queue for manager msgs
-    var replicating : bool                              # Are we replicating any keys (used in failover)?
+    var waiting_replicating_msg_cnt : nat               # num of "replicating" msgs it's expecting (used in failover)?
 
 
     var re_locked_lo : hash_t                               # low of locked hash range during repartition
@@ -33,7 +33,6 @@ process server(self:server_id) = {
         var conf : config;
         conf.primary := 0;
         conf.secondary := 1;
-        conf.replicating := false;
         confmap.set(key_t.iter.begin,key_t.iter.end,conf);
         view := 0;
         replicating := false;
@@ -85,6 +84,12 @@ process server(self:server_id) = {
         }
     }
 
+    # Returns true if server "self" is not replicating.
+    # we expect two "replicate" msgs to fully bring up a new server to replace the dead one
+    function replicating() = {
+        return waiting_replicating_msg_cnt == 0;
+    }
+
     # Logic for a server to process an incoming message from the client-server overlay network
     action process_msg(msg:msg_t) = {
         # queue up any incoming new request if the request is within the blocked hash range 
@@ -100,15 +105,16 @@ process server(self:server_id) = {
         if msg.kind = append_req_kind {
             var conf := confmap.get(msg.key);  # NEW: look up primary/secondary
             if conf.primary = self {
-                var contents_kv := table.get(msg.hash);
-                var contents := contents.kv.get(kvt, msg.key, 0);
-                contents_kv.set(kvt, msg.key, contents.append(msg.val));
-                table.set(msg.hash,contents_kv);
-                #table.set(msg.key,contents.append(msg.val));  # NEW: store in table
-                sock.send(server(conf.secondary).sock.id,msg);
-                serialize(msg.key,self,conf.secondary,msg.src_client);    # ghost call
+                if exists C. src = client(C).sock.id {
+                    var contents_kv := table.get(msg.hash);
+                    var contents := contents.kv.get(kvt, msg.key, 0);
+                    contents_kv.set(kvt, msg.key, contents.append(msg.val));
+                    table.set(msg.hash,contents_kv);
+                    sock.send(server(conf.secondary).sock.id,msg);
+                    serialize(msg.key,self,conf.secondary,msg.src_client);    # ghost call
+                }
             }
-            else if conf.secondary = self  & ~conf.replicating {  # Note -- ignore if not replicating (could be old!)
+            else if conf.secondary = self  & ~replicating {  # Note -- ignore if not replicating (could be old!)
                 if msg.tcp_src = server(conf.primary).sock.id { 
                     var contents_kv := table.get(msg.hash);
                     var contents := contents.kv.get(kvt, msg.key, 0);
@@ -137,7 +143,7 @@ process server(self:server_id) = {
                 sock.send(server(conf.secondary).sock.id,msg);
                 serialize(msg.key,self,conf.secondary,msg.src_client);   # ghost -- queue for commit
             }
-            else if conf.secondary = self & ~conf.replicating {
+            else if conf.secondary = self & ~replicating {
                 if msg.tcp_src = server(conf.primary).sock.id {
                     msg.kind := show_rsp_kind;
                     msg.contents := table.get(msg.hash).get(kvt, msg.key, 0);
@@ -154,13 +160,8 @@ process server(self:server_id) = {
             # we haven't gotten the announcement yet!). Set our contents to the contents
             # of the message.
 
-            var conf := confmap.get(msg.key);
-            table.incorporate(msg.shard);   # NEW: incorporate new shard in table
-            conf.secondary := self;
-            conf.primary := msg.primary;
-            conf.replicating := false;   # now we are ready to handle show requests
-            confmap.set(msg.shard.lo,msg.shard.hi,conf);  # NEW: update configuration map
-            replicating := false;
+            waiting_replicating_msg_cnt := waiting_replicating_msg_cnt - 1;
+            table.incorporate(msg.shard);
             while ~man_msg_queue.empty & ~replicating {
                 process_man_msg(man_msg_queue.dequeue);
             }
@@ -180,35 +181,58 @@ process server(self:server_id) = {
 
     action process_man_msg(msg:man_msg_t) = {
         if msg.kind = fail_kind {
-            if msg.view = view+1 { # NEW -- ignore duplicate views
-                var conf := confmap.get(msg.lo.val);
-                
-                if msg.primary = self & conf.secondary ~= msg.secondary {
+            if msg.view = view+1 {
+                # some server failed; bring in a stand-by server to replace it
+                # 1. the new server should wait
+                # 2. its predecessor should replicate its primary range to the new server
+                # 3. its successor should replicate its secondary range to the new server
+                # 4. every server should update their confmap on the following two ranges
+                #   - hash range 1: [msg.server_conf.secondary_lo, msg.server_conf.secondary_hi)
+                #   - hash range 2: [msg.server_conf.primary_lo, msg.server_conf.secondary_hi)
+                var predecessor := confmap.get(msg.server_conf.secondary_lo).primary;
+                var successor := confmap.get(msg.server_conf.primary_lo).secondary;
+                var new_server := msg.server_conf.self_id;
+
+                var conf_1 := confmap.get(msg.server_conf.secondary_lo);
+                var conf_2 := confmap.get(msg.server_conf.primary_lo);
+
+                # if I'm the new server, we wait for two replicate msgs from our predecessor and our successor
+                if self = new_server & self ~= conf_1.secondary {
+                    waiting_replicating_msg_cnt := waiting_replicating_msg_cnt + 1;
+                }
+                if self = new_server & self ~= conf_2.primary {
+                    waiting_replicating_msg_cnt := waiting_replicating_msg_cnt + 1;
+                }
+
+                # if I'm the predecessor of new server, replicate my primary range to new server
+                if self = predecessor & conf_1.secondary ~= new_server {
                     var rmsg : msg_t;
                     rmsg.kind := replicate_kind;
-                    debug "get table" with val=table.get(3);
-                    rmsg.shard := table.extract_(msg.lo,msg.hi); # NEW: extract shard from table
+                    rmsg.shard := table.extract_(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi);
                     rmsg.primary := self;
-                    debug "replicating" with primary = msg.primary, secondary = msg.secondary;
-                    sock.send(server(msg.secondary).sock.id,rmsg);
+                    sock.send(server(new_server).sock.id, rmsg);
                     var it := msg.lo;
                     while it < msg.hi {
                         commit_all_serialized(it.val,self,conf.secondary);  # ghost call
                         it := it.next;
                     }
                 }
-                # if we are the new secondary, wait for a replicate message
-                if self = msg.secondary & self ~= conf.secondary {
-                    conf.replicating := true;
-                    replicating := true;
+
+                # if I'm the successor of new server, replicate my secondary to new server
+                if self = successor & conf_2.primary ~= new_server {
+                    var rmsg : msg_t;
+                    rmsg.kind := replicate_kind;
+                    rmsg.shard := table.extract_(msg.server_conf.primary_lo, msg.server_conf.primary_hi);
+                    rmsg.secondary := self;
+                    sock.send(server(new_server).sock.id, rmsg);
                 }
-                # Now update our state...
+
+                # update my state (every server will need to do!)
                 view := msg.view;
-                conf.primary := msg.primary;
-                conf.secondary := msg.secondary;
-                confmap.set(msg.lo,msg.hi,conf);   # NEW set configuration of range
-                debug "new view" with server=self, lo = msg.lo, hi = msg.hi,
-                primary=conf.primary, secondary=conf.secondary;
+                conf_1.secondary := new_server;
+                conf_2.primary := new_server;
+                confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, conf_1);
+                confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, conf_2);
             }
         } else if msg.kind = re_prepare_kind {
             # New primary starts to replicate the affected hash range to 
@@ -231,12 +255,20 @@ process server(self:server_id) = {
             # do nothing.
 
         } else if msg.kind = re_view_kind {
-            # The manager announces completion of a repartition and it's time for servers
-            # to change the view.
-            
-            # TODO: update server's confmap to reflect the changed responsibilities.
-
-
+            if msg.view = view+1 {
+                # The manager announces completion of a repartition and it's time for servers
+                # to change the view.
+                
+                # update server's confmap on the following two ranges to reflect the changed responsibilities.
+                # hash range 1: [msg.server_conf.secondary_lo, msg.server_conf.secondary_hi)
+                # hash range 2: [msg.server_conf.primary_lo, msg.server_conf.primary_hi)
+                # TODO: here we assume delmap.lub(hash) wraps around. Check this!
+                view := msg.view
+                range_1_conf := confmap.get(msg.server_conf.secondary_lo)
+                range_2_conf := confmap.get(confmap.lub(msg.server_conf.secondary_lo))
+                confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, range_1_conf)
+                confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, range_2_conf)
+            }
         } else if msg.kind = re_abort_kind {
             # If an ongoing repartition is aborted by manager, the server unlock the range and 
             # processes queued requests as if nothing has happened.

@@ -21,9 +21,9 @@ For Siyu:
 # hash_table needs to be modified with the idea of nested mapping: done
 
 For Xiang:
-# handle re_view_kind logic
-# handle fail_kind handling logic (need to copy from two servers)
-# Implement the rerouting protocol
+# handle re_view_kind logic: done
+# handle fail_kind handling logic (need to copy from two servers): done
+# Implement the rerouting protocol: done
 # move can be to the left or right -> so need to distinguish two cases
 
 # Look in to client implementation to update the handle of manager massgage

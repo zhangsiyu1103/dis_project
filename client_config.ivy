@@ -13,7 +13,7 @@ module client_server_network = {
     class config = {
         field primary : server_id
         field secondary : server_id
-        filed replicating :bool
+        # filed replicating :bool
     }
 
 
@@ -71,7 +71,8 @@ module client_server_network = {
         field contents : file          # file contents (if any)
         field shard : shard_t
         field src_client : client_id   # requesting client id
-        field primary : server_id      # who is primary?
+        field primary : server_id      # who is primary? (primary replicates to new server during failover)
+        field secondary : server_id    # who is secondary? (secondary replicates to new server during failover)
 
         field tcp_src : tcp.endpoint   # tcp source of this message
     }
