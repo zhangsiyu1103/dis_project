@@ -100,15 +100,20 @@ process server(self:server_id) = {
         if msg.kind = append_req_kind {
             var conf := confmap.get(msg.key);  # NEW: look up primary/secondary
             if conf.primary = self {
-                var contents := table.get(msg.key); 
-                table.set(msg.key,contents.append(msg.val));  # NEW: store in table
+                var contents_kv := table.get(msg.hash);
+                var contents := contents.kv.get(kvt, msg.key, 0);
+                contents_kv.set(kvt, msg.key, contents.append(msg.val));
+                table.set(msg.hash,contents_kv);
+                #table.set(msg.key,contents.append(msg.val));  # NEW: store in table
                 sock.send(server(conf.secondary).sock.id,msg);
                 serialize(msg.key,self,conf.secondary,msg.src_client);    # ghost call
             }
             else if conf.secondary = self  & ~conf.replicating {  # Note -- ignore if not replicating (could be old!)
                 if msg.tcp_src = server(conf.primary).sock.id { 
-                    var contents := table.get(msg.key);
-                    table.set(msg.key,contents.append(msg.val));
+                    var contents_kv := table.get(msg.hash);
+                    var contents := contents.kv.get(kvt, msg.key, 0);
+                    contents_kv.set(kvt, msg.key, contents.append(msg.val));
+                    table.set(msg.hash,contents_kv);
                     debug "set table" with key=msg.key, val=contents.append(msg.val);
                     msg.kind := append_rsp_kind;
                     sock.send(server(conf.primary).sock.id,msg);  # respond back to server
@@ -127,18 +132,18 @@ process server(self:server_id) = {
             # requests, but it is just as well to drop them, since the request could have gone
             # to the failed server and been lost anyway.
 
-            var conf := confmap.get(msg.key);
-            if conf.primary = self {   
+            var conf := confmap.get(msg.hash);
+            if conf.primary = self {
                 sock.send(server(conf.secondary).sock.id,msg);
                 serialize(msg.key,self,conf.secondary,msg.src_client);   # ghost -- queue for commit
             }
             else if conf.secondary = self & ~conf.replicating {
-                if msg.tcp_src = server(conf.primary).sock.id { 
+                if msg.tcp_src = server(conf.primary).sock.id {
                     msg.kind := show_rsp_kind;
-                    msg.contents := table.get(msg.key);
-                    sock.send(server(conf.primary).sock.id,msg); 
+                    msg.contents := table.get(msg.hash).get(kvt, msg.key, 0);
+                    sock.send(server(conf.primary).sock.id,msg);
                     debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
-                    commit_one(msg.key); 
+                    commit_one(msg.key);
                 }
             }
         } else if msg.kind = show_rsp_kind { 
