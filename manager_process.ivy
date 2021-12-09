@@ -76,7 +76,7 @@ process manager(self:manager_id)  = {
                 conf.secondary := 0;
             }
 
-            conf.replicating := false;
+            #conf.replicating := false;
 
             # set range
             server_confs(conf.primary).primary_lo := s;
@@ -84,6 +84,7 @@ process manager(self:manager_id)  = {
             server_confs(conf.secondary).secondary_lo := s;
             server_confs(conf.secondary).secondary_hi := e;
             # set id
+            server_confs(conf.primary).ring_idx := primary;
             server_confs(conf.primary).self_id := conf.primary;
             server_confs(conf.primary).relative_secondary := conf.secondary;
             server_confs(conf.secondary).relative_primary := conf.primary;
@@ -305,8 +306,9 @@ process manager(self:manager_id)  = {
 
                     #s_confs := s_confs.append(s_conf);
 
-
-                    if freq(prev_idx) < freq(next_idx){
+                    #only move to left for now
+                    #if freq(prev_idx) < freq(next_idx){
+                    if false{
                         var s_conf := server_confs(max_idx);
 
                         re_conf.old_p := used_server(max_idx);
