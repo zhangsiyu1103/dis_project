@@ -19,7 +19,7 @@ module client_implementation = {
     after init {
         var server_in_ring: server_id := 4;
         var primary:server_id := 0;
-        var default_len : uint[8] := hash_t_max/server_in_ring;
+        var default_len : uint[8] := hash_t_max/cast(server_in_ring);
         var s:uint[8] := 0;
         var e:uint[8] := s + default_len-1;
         while primary < server_in_ring{
@@ -29,7 +29,6 @@ module client_implementation = {
                 conf.secondary := 0;
             }
 
-            conf.replicating := false;
 
             confmap.set(s,e,conf);
             primary := primary + 1;
