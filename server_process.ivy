@@ -1,7 +1,8 @@
 #lang ivy1.8
 include table
 
-process server(self:server_id) = {
+module server_process(commit) = {
+    process server(self:server_id) = {
 
     # Each server process has a socket on the
     # client-server overlay *and* a socket on the
@@ -32,7 +33,6 @@ process server(self:server_id) = {
         freq := 0;
 
         # initialize confmap
-        var server_in_ring: server_id := 4;
         var primary:server_id := 0;
         var default_len : uint[8] := hash_t_max/cast(server_in_ring);
         var s:uint[8] := 0;
@@ -54,29 +54,29 @@ process server(self:server_id) = {
     # Utility functions.
 
     # Decide whether mid is in [lo, hi), with hash_t.max + 1 wrapped around to 0.
-    function hash_in_between(lo, mid, hi : hash_t) = 
+    function hash_in_between(lo:hash_t, mid:hash_t, hi : hash_t) = 
         (lo = hi -> false) 
         & (lo < hi -> (mid>=lo & mid<hi)) 
         & (lo > hi -> ((mid>=lo & mid<=hash_t.max) | (mid >= 0 & mid < hi)))
-    
+
 
     # Implementation of message receipt on the client-server network.
 
     implement sock.recv(src:tcp.endpoint,msg:msg_t) {
         debug "recv" with self = self, msg = msg;
-        msg.tcp_src := src
-        process_msg(msg)
+        msg.tcp_src := src;
+        process_msg(msg);
     }
 
     # Logic for a server to process an incoming message from the client-server overlay network
     action process_msg(msg:msg_t) = {
         if (msg.kind = append_req_kind | msg.kind = show_req_kind) & hash_in_between(re_locked_lo, msg.hash, re_locked_hi) {
-            # Queue up any incoming new request if the request is within the blocked hash range 
-            # because a repartition prepare is undertaking.
+        # Queue up any incoming new request if the request is within the blocked hash range 
+        # because a repartition prepare is undertaking.
             re_pending_reqs_queue.enqueue(msg);
         }
         else {
-            # Otherwise, process it as usual.
+        # Otherwise, process it as usual.
             freq := freq + 1;
 
             if msg.kind = append_req_kind {
@@ -104,7 +104,7 @@ process server(self:server_id) = {
                         commit_one(msg.key);
                     }
                 }
-            } else if msg.kind = append_rsp_kind { 
+            } else if msg.kind = append_rsp_kind {
                 sock.send(client(msg.src_client).sock.id,msg);  # We pass it on to client.
             } else if msg.kind = show_req_kind {
 
@@ -154,7 +154,6 @@ process server(self:server_id) = {
 
             }
         }
-        
     }
 
     action process_man_msg(msg:man_msg_t) = {
@@ -178,7 +177,7 @@ process server(self:server_id) = {
                 var conf_1 := confmap.get(msg.server_conf.secondary_lo);
                 var conf_2 := confmap.get(msg.server_conf.primary_lo);
 
-                # if I'm the new server, we wait for two replicate msgs from our predecessor and our successor
+                    # if I'm the new server, we wait for two replicate msgs from our predecessor and our successor
                 if self = new_server & self ~= conf_1.secondary {
                     num_replicate_msg_to_expect := num_replicate_msg_to_expect + 1;
                 }
@@ -186,7 +185,7 @@ process server(self:server_id) = {
                     num_replicate_msg_to_expect := num_replicate_msg_to_expect + 1;
                 }
 
-                # if I'm the predecessor of new server, replicate my primary range to new server
+                    # if I'm the predecessor of new server, replicate my primary range to new server
                 if self = predecessor & conf_1.secondary ~= new_server {
                     var rmsg : msg_t;
                     rmsg.kind := replicate_kind;
@@ -200,7 +199,7 @@ process server(self:server_id) = {
                     }
                 }
 
-                # if I'm the successor of new server, replicate my secondary to new server
+                    # if I'm the successor of new server, replicate my secondary to new server
                 if self = successor & conf_2.primary ~= new_server {
                     var rmsg : msg_t;
                     rmsg.kind := replicate_kind;
@@ -209,7 +208,7 @@ process server(self:server_id) = {
                     sock.send(server(new_server).sock.id, rmsg);
                 }
 
-                # update my state (every server will need to do!)
+                    # update my state (every server will need to do!)
                 view := msg.view;
                 freq := 0;
                 conf_1.secondary := new_server;
@@ -218,8 +217,8 @@ process server(self:server_id) = {
                 confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, conf_2);
             }
         } else if msg.kind = re_prepare_kind {
-            # New primary starts to replicate the affected hash range to 
-            # new secondary.
+        # New primary starts to replicate the affected hash range to 
+        # new secondary.
             if self = msg.re_conf.new_p {
                 # when the manager announce a repartition prepare message, 
                 # the new primary should 
@@ -234,8 +233,8 @@ process server(self:server_id) = {
                 sock.send(server(msg.re_conf.new_s).sock.id, rmsg);        
             }
 
-            # If self is the old primary or the new secondary for the affected hash range,
-            # do nothing.
+        # If self is the old primary or the new secondary for the affected hash range,
+        # do nothing.
 
         } else if msg.kind = re_view_kind {
             if msg.view = view+1 {
@@ -257,22 +256,21 @@ process server(self:server_id) = {
                 range_2_conf.primary := msg.server_conf.self_id;
                 range_2_conf.secondary := msg.server_conf.relative_secondary;
 
-                confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, range_1_conf)
-                confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, range_2_conf)
+                confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, range_1_conf);
+                confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, range_2_conf);
             }
         } else if msg.kind = re_abort_kind {
-            # If an ongoing repartition is aborted by manager, the server unlock the range and 
-            # processes queued requests as if nothing has happened.
+        # If an ongoing repartition is aborted by manager, the server unlock the range and 
+        # processes queued requests as if nothing has happened.
             re_locked_lo := re_locked_hi;
             while ~re_pending_reqs_queue.empty {
                 process_msg(re_pending_reqs_queue.dequeue);
             }
-        } else {
-            # msg.kind not recognizable; should not happen
-            assert(false, "msg.kind is unrecognizable");
         }
-
-        
+        #else {
+        #    # msg.kind not recognizable; should not happen
+        #    assert(false, "msg.kind is unrecognizable");
+        #}
     }
 
     implement man_sock.recv(src:tcp.endpoint,msg:man_msg_t) {
@@ -287,7 +285,7 @@ process server(self:server_id) = {
         }
     }
 
-    
+
     # On a timer 'tick', we send a 'ping' to the manager
     # with our current view number.
 
@@ -315,11 +313,10 @@ process server(self:server_id) = {
         }
         common {
             var true_primary(K:key_t) : server_id
-            
             after init {
                 true_primary(K) := 0;
             }
-            
+
             action serialize(k:key_t,primary:server_id,secondary:server_id,src_client:client_id) = {
                 if primary = true_primary(k) {
                     debug "serialize" with server = secondary, client = src_client;
@@ -328,23 +325,23 @@ process server(self:server_id) = {
             }
             action commit_all_serialized(k:key_t,self:server_id, secondary:server_id) = {
                 while ~serialized(secondary,k).empty
-                decreases serialized(secondary,k).tail - serialized(secondary,k).head
+                    decreases serialized(secondary,k).tail - serialized(secondary,k).head
                 {
-                invariant 0 <= pos & pos <= s.kv.end
-                invariant lo.between(X,hi) & s.value(X) = 0 -> ~tab.contains(X)
-                invariant lo.between(X,hi) & 0 <= Y & Y < pos & s.key_at(Y,X) & s.value(X) ~= 0
-                                 -> tab.contains(X) & tab.maps(X,s.value(X))
-                invariant ~lo.between(X,hi) -> spec.tab_invar(X,Y)
+                #invariant 0 <= pos & pos <= s.kv.end
+                #invariant lo.between(X,hi) & s.value(X) = 0 -> ~tab.contains(X)
+                #invariant lo.between(X,hi) & 0 <= Y & Y < pos & s.key_at(Y,X) & s.value(X) ~= 0
+                #        -> tab.contains(X) & tab.maps(X,s.value(X))
+                #invariant ~lo.between(X,hi) -> spec.tab_invar(X,Y)
                 # following are object invariants of tab and shouldn't be needed here
-                invariant tab.maps(X,Y) & tab.maps(X,Z) -> Y = Z & tab.contains(X)
-            {
-                var k := s.kv.get_key(pos);
-                var d := s.kv.get_value(pos);
-                if lo.between(k,hi) & d ~= 0{
-                    call tab.set(k,d)
-                };
-                pos := pos.next
-            }
+                #invariant tab.maps(X,Y) & tab.maps(X,Z) -> Y = Z & tab.contains(X)
+                #{
+                #var k := s.kv.get_key(pos);
+                #var d := s.kv.get_value(pos);
+                #if lo.between(k,hi) & d ~= 0{
+                #call tab.set(k,d)
+                #};
+                #pos := pos.next
+                #}
                     var cl := serialized(secondary,k).dequeue;
                     if self = true_primary(k) {
                         commit(cl);
@@ -353,8 +350,6 @@ process server(self:server_id) = {
                 true_primary(k) := self;
             }
         }
-    }
-} with client.shard_t.kvt, client.shard_t.index
-
+    } with client.shard_t.kvt, client.shard_t.index
 }
 

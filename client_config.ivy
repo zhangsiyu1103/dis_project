@@ -22,15 +22,15 @@ module client_server_network = {
         field self_id : server_id
         field relative_primary : server_id          # primary id if self_id is the secondary
         field relative_secondary : server_id        # secondary if if self_id is the primary
-        field primary_lo : unsigned_bit_vector(8)
-        field primary_hi : unsigned_bit_vector(8)
-        field secondary_lo : unsigned_bit_vector(8)
-        field secondary_hi : unsigned_bit_vector(8)
+        field primary_lo : uint[8]
+        field primary_hi : uint[8]
+        field secondary_lo : uint[8]
+        field secondary_hi : uint[8]
     }
 
     class repartition_config = {
-        field lo : unsigned_bit_vector(8)
-        field hi : unsigned_bit_vector(8)
+        field lo : uint[8]
+        field hi : uint[8]
         field old_p : server_id
         field old_s : server_id
         field new_p : server_id
@@ -38,8 +38,8 @@ module client_server_network = {
     }
 
     #class copy_config = {
-    #    field lo : unsigned_bit_vector(8)
-    #    field hi : unsigned_bit_vector(8)
+    #    field lo : uint[8]
+    #    field hi : uint[8]
     #    field src : server_id
     #    field target : server_id
     #    #field new_p : server_id
@@ -57,7 +57,7 @@ module client_server_network = {
         append_rsp_kind,    # append response
         show_req_kind,      # show request
         show_rsp_kind,      # show response
-        replicate_kind      # server-to-server file transfer during failover
+        replicate_kind,      # server-to-server file transfer during failover
         re_replicate_kind   # server-to-server file transfer durig repartition
     }
 

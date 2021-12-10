@@ -4,9 +4,9 @@
 #
 
 include linearizable_append
-include manager_process
-include client_server_network
+include client_config
 include management_network
+include manager_process
 include server_process
 include client_implementation
 

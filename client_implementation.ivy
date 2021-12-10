@@ -17,7 +17,6 @@ module client_implementation = {
     # By agreement, these are 0,1 initially.
 
     after init {
-        var server_in_ring: server_id := 4;
         var primary:server_id := 0;
         var default_len : uint[8] := hash_t_max/cast(server_in_ring);
         var s:uint[8] := 0;
