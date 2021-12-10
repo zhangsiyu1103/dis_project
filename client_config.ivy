@@ -13,15 +13,15 @@ module client_server_network = {
     class config = {
         field primary : server_id
         field secondary : server_id
-        # filed replicating :bool
+        # filed replicating : bool
     }
 
 
     class server_config = {
         field ring_id : nat
         field self_id : server_id
-        field relative_primary : server_id
-        field relative_secondary : server_id
+        field relative_primary : server_id          # primary id if self_id is the secondary
+        field relative_secondary : server_id        # secondary if if self_id is the primary
         field primary_lo : unsigned_bit_vector(8)
         field primary_hi : unsigned_bit_vector(8)
         field secondary_lo : unsigned_bit_vector(8)
