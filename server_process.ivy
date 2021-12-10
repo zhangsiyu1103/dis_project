@@ -4,352 +4,352 @@ include table
 module server_process(commit) = {
     process server(self:server_id) = {
 
-    # Each server process has a socket on the
-    # client-server overlay *and* a socket on the
-    # management overlay.
+        # Each server process has a socket on the
+        # client-server overlay *and* a socket on the
+        # management overlay.
 
-    instance sock : net.socket
-    instance man_sock : man_net.socket
+        instance sock : net.socket
+        instance man_sock : man_net.socket
 
-    # The state of a server consists of:
-    instance table : hash_table(hash_t,kvt,shard_t)     # key/value replica
-    var view : nat                                      # the current view
-    instance confmap : delegation_map(hash_t,config)    # peer servers' configurations
-    instance timer : timeout_sec                        # timer for ping messages
-    instance man_msg_queue : unbounded_queue(man_msg_t) # queue for manager msgs
-    var num_replicate_msg_to_expect : nat               # num of "replicating" msgs it's expecting (used in failover)
-    var re_locked_lo : hash_t                               # low of locked hash range during repartition
-    var re_locked_hi : hash_t                               # high of locked hash range during repartition
-    instance re_pending_reqs_queue : unbounded_queue(msg_t) # pending requests due to a repartition is ongoing
-    var freq : nat                                          # number of read/write served since reset
-    
-    # Initialization. Note that hash ranges are evenly distributed to all servers initially.
+        # The state of a server consists of:
+        instance table : hash_table(hash_t,kvt,shard_t)     # key/value replica
+        var view : nat                                      # the current view
+        instance confmap : delegation_map(hash_t,config)    # peer servers' configurations
+        instance timer : timeout_sec                        # timer for ping messages
+        instance man_msg_queue : unbounded_queue(man_msg_t) # queue for manager msgs
+        var num_replicate_msg_to_expect : nat               # num of "replicating" msgs it's expecting (used in failover)
+        var re_locked_lo : hash_t.iter.t                               # low of locked hash range during repartition
+        var re_locked_hi : hash_t.iter.t                               # high of locked hash range during repartition
+        instance re_pending_reqs_queue : unbounded_queue(msg_t) # pending requests due to a repartition is ongoing
+        var freq : nat                                          # number of read/write served since reset
+        
+        # Initialization. Note that hash ranges are evenly distributed to all servers initially.
 
-    after init {
-        view := 0;
-        num_replicate_msg_to_expect := 0;
-        re_locked_lo := 0;
-        re_locked_hi := 0;
-        freq := 0;
+        after init {
+            view := 0;
+            num_replicate_msg_to_expect := 0;
+            re_locked_lo := 0;
+            re_locked_hi := 0;
+            freq := 0;
 
-        # initialize confmap
-        var primary:server_id := 0;
-        var default_len : uint[8] := hash_t_max/cast(server_in_ring);
-        var s:uint[8] := 0;
-        var e:uint[8] := s + default_len-1;
-        while primary < server_in_ring{
-            conf.primary := primary;
-            conf.secondary := primary + 1;
-            if conf.secondary = server_in_ring{
-                conf.secondary := 0;
-            }
-
-            confmap.set(s,e,conf);
-            primary := primary + 1;
-            s := e + 1;
-            e := s + default_len-1;
-        }
-    }
-
-    # Utility functions.
-
-    # Decide whether mid is in [lo, hi), with hash_t.max + 1 wrapped around to 0.
-    function hash_in_between(lo:hash_t, mid:hash_t, hi : hash_t) = 
-        (lo = hi -> false) 
-        & (lo < hi -> (mid>=lo & mid<hi)) 
-        & (lo > hi -> ((mid>=lo & mid<=hash_t.max) | (mid >= 0 & mid < hi)))
-
-
-    # Implementation of message receipt on the client-server network.
-
-    implement sock.recv(src:tcp.endpoint,msg:msg_t) {
-        debug "recv" with self = self, msg = msg;
-        msg.tcp_src := src;
-        process_msg(msg);
-    }
-
-    # Logic for a server to process an incoming message from the client-server overlay network
-    action process_msg(msg:msg_t) = {
-        if (msg.kind = append_req_kind | msg.kind = show_req_kind) & hash_in_between(re_locked_lo, msg.hash, re_locked_hi) {
-        # Queue up any incoming new request if the request is within the blocked hash range 
-        # because a repartition prepare is undertaking.
-            re_pending_reqs_queue.enqueue(msg);
-        }
-        else {
-        # Otherwise, process it as usual.
-            freq := freq + 1;
-
-            if msg.kind = append_req_kind {
-                var conf := confmap.get(msg.hash);  # NEW: look up primary/secondary
-                if conf.primary = self {
-                    if exists C. msg.tcp_src = client(C).sock.id {
-                        var contents_kv := table.get(msg.hash);
-                        var contents := contents_kv.get(kvt, msg.key, file.empty);
-                        contents_kv.set(kvt, msg.key, contents.append(msg.val));
-                        table.set(msg.hash, contents_kv);
-                        sock.send(server(conf.secondary).sock.id, msg);
-                        serialize(msg.key,self,conf.secondary,msg.src_client);    # ghost call
-                    }
-                }
-                else if conf.secondary = self  & num_replicate_msg_to_expect = 0 {
-                    if msg.tcp_src = server(conf.primary).sock.id { 
-                        var contents_kv := table.get(msg.hash);
-                        var contents := contents_kv.get(kvt, msg.key, 0);
-                        contents_kv.set(kvt, msg.key, contents.append(msg.val));
-                        table.set(msg.hash, contents_kv);
-                        debug "set table" with key=msg.key, val=contents.append(msg.val);
-                        msg.kind := append_rsp_kind;
-                        sock.send(server(conf.primary).sock.id,msg);  # respond back to server
-                        debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
-                        commit_one(msg.key);
-                    }
-                }
-            } else if msg.kind = append_rsp_kind {
-                sock.send(client(msg.src_client).sock.id,msg);  # We pass it on to client.
-            } else if msg.kind = show_req_kind {
-
-                # We now handle show requests at the primary. We respond to the
-                # client with a `show_rsp` messages and our current contents. We
-                # also commit the operation. Notice if we are waiting for a replicate
-                # message, we can't serve `show` requests yet. We could queue the lost
-                # requests, but it is just as well to drop them, since the request could have gone
-                # to the failed server and been lost anyway.
-
-                var conf := confmap.get(msg.hash);
-                if conf.primary = self {
-                    sock.send(server(conf.secondary).sock.id,msg);
-                    serialize(msg.key,self,conf.secondary,msg.src_client);   # ghost -- queue for commit
-                }
-                else if conf.secondary = self & num_replicate_msg_to_expect = 0 {
-                    if msg.tcp_src = server(conf.primary).sock.id {
-                        msg.kind := show_rsp_kind;
-                        msg.contents := table.get(msg.hash).get(kvt, msg.key, 0);
-                        sock.send(server(conf.primary).sock.id,msg);
-                        debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
-                        commit_one(msg.key);
-                    }
-                }
-            } else if msg.kind = show_rsp_kind { 
-                sock.send(client(msg.src_client).sock.id,msg); # Just forward it to client
-            } else if msg.kind = replicate_kind {
-                # If we get a `replicate` message it means we are the new server during a failover.
-                # We expect in total two `replicate` messages for each failover.
-                # Incorporate contents of the message to our contents.
-                num_replicate_msg_to_expect := num_replicate_msg_to_expect - 1;
-                table.incorporate(msg.shard);
-
-                # if we got all two `replicate` msgs, then process queued-up manager announcements, if any.
-                while ~man_msg_queue.empty & num_replicate_msg_to_expect = 0 {
-                    process_man_msg(man_msg_queue.dequeue);
-                }
-            } else if msg.kind = re_replicate_kind {
-                # If we get a "re_replicate_kind" message it means we are the new secondary
-                # for some hash range. Incoporate those file to our table and ack to the manager.
-                table.incorporate(msg.shard);
-                var amsg : man_msg_t;
-                amsg.kind := re_ack_kind;
-                for it,mn in manager_id.iter {
-                    man_sock.send(manager(mn).sock.id, amsg);
+            # initialize confmap
+            var primary:server_id := 0;
+            var default_len : hash_t := hash_t_max/cast(server_in_ring);
+            var s:hash_t := 0;
+            var e:hash_t := s + default_len-1;
+            var conf:config;
+            while primary < server_in_ring{
+                conf.primary := primary;
+                conf.secondary := primary + 1;
+                if conf.secondary = server_in_ring{
+                    conf.secondary := 0;
                 }
 
+                confmap.set(hash_t.iter.create(s),hash_t.iter.create(e),conf);
+                primary := primary + 1;
+                s := e + 1;
+                e := s + default_len-1;
             }
         }
-    }
 
-    action process_man_msg(msg:man_msg_t) = {
-        if msg.kind = fail_kind {
-            if msg.view = view+1 {
-                # some server failed; bring in a hot, stand-by server to replace it.
-                # 1. the new server should wait
-                # 2. its predecessor should replicate its primary range to the new server
-                # 3. its successor should replicate its secondary range to the new server
-                # 4. every server should 
-                #   - change view
-                #   - clear freq
-                #   - update their confmap on the following two ranges
-                #       - hash range 1: [msg.server_conf.secondary_lo, msg.server_conf.secondary_hi)
-                #       - hash range 2: [msg.server_conf.primary_lo, msg.server_conf.secondary_hi)
+        # Utility functions.
 
-                var predecessor := msg.server_conf.relative_primary;
-                var successor := msg.server_conf.relative_secondary;
-                var new_server := msg.server_conf.self_id;
+        # Decide whether mid is in [lo, hi), with hash_t.max + 1 wrapped around to 0.
+        function hash_in_between(lo:hash_t, mid:hash_t, hi : hash_t) = 
+        (lo = hi -> false)
+        & (lo < hi -> (mid>=lo & mid<hi))
+        & (lo > hi -> ((mid>=lo & mid<=255) | (mid >= 0 & mid < hi)))
 
-                var conf_1 := confmap.get(msg.server_conf.secondary_lo);
-                var conf_2 := confmap.get(msg.server_conf.primary_lo);
+
+        # Implementation of message receipt on the client-server network.
+
+        implement sock.recv(src:tcp.endpoint,msg:msg_t) {
+            debug "recv" with self = self, msg = msg;
+            msg.tcp_src := src;
+            process_msg(msg);
+        }
+
+        # Logic for a server to process an incoming message from the client-server overlay network
+        action process_msg(msg:msg_t) = {
+            if (msg.kind = append_req_kind | msg.kind = show_req_kind) & hash_in_between(re_locked_lo.val, msg.hash, re_locked_hi.val) {
+                # Queue up any incoming new request if the request is within the blocked hash range 
+                # because a repartition prepare is undertaking.
+                re_pending_reqs_queue.enqueue(msg);
+            }
+            else {
+                # Otherwise, process it as usual.
+                freq := freq + 1;
+
+                if msg.kind = append_req_kind {
+                    var conf := confmap.get(msg.hash);  # NEW: look up primary/secondary
+                    if conf.primary = self {
+                        if exists C. msg.tcp_src = client(C).sock.id {
+                            var contents_kv := table.get(msg.hash);
+                            var contents := contents_kv.get(msg.key, file.empty);
+                            contents_kv := contents_kv.set(msg.key, contents.append(msg.val));
+                            table.set(msg.hash, contents_kv);
+                            sock.send(server(conf.secondary).sock.id, msg);
+                            serialize(msg.hash,self,conf.secondary,msg.src_client);    # ghost call
+                        }
+                    }
+                    else if conf.secondary = self  & num_replicate_msg_to_expect = 0 {
+                        if msg.tcp_src = server(conf.primary).sock.id { 
+                            var contents_kv := table.get(msg.hash);
+                            var contents := contents_kv.get(msg.key, 0);
+                            contents_kv := contents_kv.set(msg.key, contents.append(msg.val));
+                            table.set(msg.hash, contents_kv);
+                            debug "set table" with key=msg.key, val=contents.append(msg.val);
+                            msg.kind := append_rsp_kind;
+                            sock.send(server(conf.primary).sock.id,msg);  # respond back to server
+                            debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
+                            commit_one(msg.hash);
+                        }
+                    }
+                } else if msg.kind = append_rsp_kind {
+                    sock.send(client(msg.src_client).sock.id,msg);  # We pass it on to client.
+                } else if msg.kind = show_req_kind {
+
+                    # We now handle show requests at the primary. We respond to the
+                    # client with a `show_rsp` messages and our current contents. We
+                    # also commit the operation. Notice if we are waiting for a replicate
+                    # message, we can't serve `show` requests yet. We could queue the lost
+                    # requests, but it is just as well to drop them, since the request could have gone
+                    # to the failed server and been lost anyway.
+
+                    var conf := confmap.get(msg.hash);
+                    if conf.primary = self {
+                        sock.send(server(conf.secondary).sock.id,msg);
+                        serialize(msg.hash,self,conf.secondary,msg.src_client);   # ghost -- queue for commit
+                    }
+                    else if conf.secondary = self & num_replicate_msg_to_expect = 0 {
+                        if msg.tcp_src = server(conf.primary).sock.id {
+                            msg.kind := show_rsp_kind;
+                            var contents_kv := table.get(msg.hash);
+                            msg.contents := contents_kv.get(msg.key, 0);
+                            sock.send(server(conf.primary).sock.id,msg);
+                            debug "committing" with client = msg.src_client, server = self, kind = msg.kind;
+                            commit_one(msg.hash);
+                        }
+                    }
+                } else if msg.kind = show_rsp_kind {
+                    sock.send(client(msg.src_client).sock.id,msg); # Just forward it to client
+                } else if msg.kind = replicate_kind {
+                    # If we get a `replicate` message it means we are the new server during a failover.
+                    # We expect in total two `replicate` messages for each failover.
+                    # Incorporate contents of the message to our contents.
+                    num_replicate_msg_to_expect := num_replicate_msg_to_expect - 1;
+                    table.incorporate(msg.shard);
+
+                    # if we got all two `replicate` msgs, then process queued-up manager announcements, if any.
+                    while ~man_msg_queue.empty & num_replicate_msg_to_expect = 0 {
+                        process_man_msg(man_msg_queue.dequeue);
+                    }
+                } else if msg.kind = re_replicate_kind {
+                    # If we get a "re_replicate_kind" message it means we are the new secondary
+                    # for some hash range. Incoporate those file to our table and ack to the manager.
+                    table.incorporate(msg.shard);
+                    var amsg : man_msg_t;
+                    amsg.kind := re_ack_kind;
+                    for it,mn in manager_id.iter {
+                        man_sock.send(manager(mn).sock.id, amsg);
+                    }
+
+                }
+            }
+        }
+
+        action process_man_msg(msg:man_msg_t) = {
+            if msg.kind = fail_kind {
+                if msg.view = view+1 {
+                    # some server failed; bring in a hot, stand-by server to replace it.
+                    # 1. the new server should wait
+                    # 2. its predecessor should replicate its primary range to the new server
+                    # 3. its successor should replicate its secondary range to the new server
+                    # 4. every server should 
+                    #   - change view
+                    #   - clear freq
+                    #   - update their confmap on the following two ranges
+                    #       - hash range 1: [msg.server_conf.secondary_lo, msg.server_conf.secondary_hi)
+                    #       - hash range 2: [msg.server_conf.primary_lo, msg.server_conf.secondary_hi)
+
+                    var predecessor := msg.server_conf.relative_primary;
+                    var successor := msg.server_conf.relative_secondary;
+                    var new_server := msg.server_conf.self_id;
+
+                    var conf_1 := confmap.get(msg.server_conf.secondary_lo.val);
+                    var conf_2 := confmap.get(msg.server_conf.primary_lo.val);
 
                     # if I'm the new server, we wait for two replicate msgs from our predecessor and our successor
-                if self = new_server & self ~= conf_1.secondary {
-                    num_replicate_msg_to_expect := num_replicate_msg_to_expect + 1;
-                }
-                if self = new_server & self ~= conf_2.primary {
-                    num_replicate_msg_to_expect := num_replicate_msg_to_expect + 1;
-                }
+                    if self = new_server & self ~= conf_1.secondary {
+                        num_replicate_msg_to_expect := num_replicate_msg_to_expect + 1;
+                    }
+                    if self = new_server & self ~= conf_2.primary {
+                        num_replicate_msg_to_expect := num_replicate_msg_to_expect + 1;
+                    }
 
                     # if I'm the predecessor of new server, replicate my primary range to new server
-                if self = predecessor & conf_1.secondary ~= new_server {
-                    var rmsg : msg_t;
-                    rmsg.kind := replicate_kind;
-                    rmsg.shard := table.extract_(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi);
-                    rmsg.primary := self;
-                    sock.send(server(new_server).sock.id, rmsg);
-                    var it := msg.lo;
-                    while it < msg.hi {
-                        commit_all_serialized(it.val,self,conf.secondary);  # ghost call
-                        it := it.next;
+                    if self = predecessor & conf_1.secondary ~= new_server {
+                        var rmsg : msg_t;
+                        rmsg.kind := replicate_kind;
+                        rmsg.shard := table.extract_(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi);
+                        rmsg.primary := self;
+                        sock.send(server(new_server).sock.id, rmsg);
+                        var it := msg.server_conf.secondary_lo;
+                        while it < msg.server_conf.secondary_hi {
+                            commit_all_serialized(cast(it.val),self, conf_1.secondary);  # ghost call
+                            it := it.next;
+                        }
                     }
-                }
 
                     # if I'm the successor of new server, replicate my secondary to new server
-                if self = successor & conf_2.primary ~= new_server {
-                    var rmsg : msg_t;
-                    rmsg.kind := replicate_kind;
-                    rmsg.shard := table.extract_(msg.server_conf.primary_lo, msg.server_conf.primary_hi);
-                    rmsg.secondary := self;
-                    sock.send(server(new_server).sock.id, rmsg);
-                }
+                    if self = successor & conf_2.primary ~= new_server {
+                        var rmsg : msg_t;
+                        rmsg.kind := replicate_kind;
+                        rmsg.shard := table.extract_(msg.server_conf.primary_lo, msg.server_conf.primary_hi);
+                        rmsg.secondary := self;
+                        sock.send(server(new_server).sock.id, rmsg);
+                        var it := msg.server_conf.primary_lo;
+                        while it < msg.server_conf.primary_hi {
+                            abort_all_serialized(cast(it.val),conf_2.primary, self);  # ghost call
+                            it := it.next;
+                        }
+                    }
 
                     # update my state (every server will need to do!)
-                view := msg.view;
-                freq := 0;
-                conf_1.secondary := new_server;
-                conf_2.primary := new_server;
-                confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, conf_1);
-                confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, conf_2);
-            }
-        } else if msg.kind = re_prepare_kind {
-        # New primary starts to replicate the affected hash range to 
-        # new secondary.
-            if self = msg.re_conf.new_p {
-                # when the manager announce a repartition prepare message, 
-                # the new primary should 
-                # 1. block the repartitioned hash range 
-                # 2. start replicating content in that range to the new secondary
-                re_locked_lo := msg.re_conf.lo;
-                re_locked_hi := msg.re_conf.hi;
+                    view := msg.view;
+                    freq := 0;
+                    conf_1.secondary := new_server;
+                    conf_2.primary := new_server;
+                    confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, conf_1);
+                    confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, conf_2);
+                }
+            } else if msg.kind = re_prepare_kind {
+                # New primary starts to replicate the affected hash range to 
+                # new secondary.
+                if self = msg.re_conf.new_p {
+                    # when the manager announce a repartition prepare message, 
+                    # the new primary should 
+                    # 1. block the repartitioned hash range 
+                    # 2. start replicating content in that range to the new secondary
+                    re_locked_lo := msg.re_conf.lo;
+                    re_locked_hi := msg.re_conf.hi;
 
-                var rmsg : msg_t;
-                rmsg.kind := re_replicate_kind;
-                rmsg.shard := table.extract_(msg.re_conf.lo, msg.re_conf.hi);
-                sock.send(server(msg.re_conf.new_s).sock.id, rmsg);        
-            }
+                    var rmsg : msg_t;
+                    rmsg.kind := re_replicate_kind;
+                    rmsg.shard := table.extract_(msg.re_conf.lo, msg.re_conf.hi);
+                    sock.send(server(msg.re_conf.new_s).sock.id, rmsg);        
+                }
 
-        # If self is the old primary or the new secondary for the affected hash range,
-        # do nothing.
+                # If self is the old primary or the new secondary for the affected hash range,
+                # do nothing.
 
-        } else if msg.kind = re_view_kind {
-            if msg.view = view+1 {
-                # The manager announces completion of a repartition and it's time for servers
-                # to change the view.
-                # 1. change view
-                # 2. reset freq
-                # 3. update server's confmap on the following two ranges to reflect the changed responsibilities.
-                #   - hash range 1: [msg.server_conf.secondary_lo, msg.server_conf.secondary_hi)
-                #   - hash range 2: [msg.server_conf.primary_lo, msg.server_conf.primary_hi)
-                view := msg.view;
-                freq := 0;
+            } else if msg.kind = re_view_kind {
+                if msg.view = view+1 {
+                    # The manager announces completion of a repartition and it's time for servers
+                    # to change the view.
+                    # 1. change view
+                    # 2. reset freq
+                    # 3. update server's confmap on the following two ranges to reflect the changed responsibilities.
+                    #   - hash range 1: [msg.server_conf.secondary_lo, msg.server_conf.secondary_hi)
+                    #   - hash range 2: [msg.server_conf.primary_lo, msg.server_conf.primary_hi)
+                    view := msg.view;
+                    freq := 0;
 
-                var range_1_conf : config;
-                range_1_conf.primary := msg.server_conf.relative_primary;
-                rangeg_1_conf.secondary := msg.server_conf.self_id;
+                    var range_1_conf : config;
+                    range_1_conf.primary := msg.server_conf.relative_primary;
+                    range_1_conf.secondary := msg.server_conf.self_id;
 
-                var range_2_conf : config;
-                range_2_conf.primary := msg.server_conf.self_id;
-                range_2_conf.secondary := msg.server_conf.relative_secondary;
+                    var range_2_conf : config;
+                    range_2_conf.primary := msg.server_conf.self_id;
+                    range_2_conf.secondary := msg.server_conf.relative_secondary;
 
-                confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, range_1_conf);
-                confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, range_2_conf);
-            }
-        } else if msg.kind = re_abort_kind {
-        # If an ongoing repartition is aborted by manager, the server unlock the range and 
-        # processes queued requests as if nothing has happened.
-            re_locked_lo := re_locked_hi;
-            while ~re_pending_reqs_queue.empty {
-                process_msg(re_pending_reqs_queue.dequeue);
-            }
-        }
-        #else {
-        #    # msg.kind not recognizable; should not happen
-        #    assert(false, "msg.kind is unrecognizable");
-        #}
-    }
-
-    implement man_sock.recv(src:tcp.endpoint,msg:man_msg_t) {
-
-        # Here we handle an announcement message on the management overlay.
-        # If we are the new primary and there is a new secondary, we send
-        # our full contents to the secondary in a `replicate` message.
-        if num_replicate_msg_to_expect > 0 {
-            man_msg_queue.enqueue(msg);
-        } else {
-            process_man_msg(msg);
-        }
-    }
-
-
-    # On a timer 'tick', we send a 'ping' to the manager
-    # with our current view number.
-
-    implement timer.timeout {
-        var msg : man_msg_t;
-        msg.kind := ping_kind;
-        msg.view := view;
-        msg.src := self;
-        msg.freq := freq;
-        for it,mn in manager_id.iter {
-            man_sock.send(manager(mn).sock.id,msg);
-        }
-    }
-
-    # This ghost code is used to keep track of append requests that
-    # have been serialized at the primary, but not yet committed at the
-    # secondary.
-    
-    specification {
-        instance serialized(K:key_t) : unbounded_queue(client_id)
-        action commit_one(k:key_t) = {
-            if ~serialized(k).empty {
-                commit(serialized(k).dequeue);
-            }
-        }
-        common {
-            var true_primary(K:key_t) : server_id
-            after init {
-                true_primary(K) := 0;
-            }
-
-            action serialize(k:key_t,primary:server_id,secondary:server_id,src_client:client_id) = {
-                if primary = true_primary(k) {
-                    debug "serialize" with server = secondary, client = src_client;
-                    serialized(secondary,k).enqueue(src_client);
+                    confmap.set(msg.server_conf.secondary_lo, msg.server_conf.secondary_hi, range_1_conf);
+                    confmap.set(msg.server_conf.primary_lo, msg.server_conf.primary_hi, range_2_conf);
+                }
+            } else if msg.kind = re_abort_kind {
+                # If an ongoing repartition is aborted by manager, the server unlock the range and 
+                # processes queued requests as if nothing has happened.
+                re_locked_lo := re_locked_hi;
+                while ~re_pending_reqs_queue.empty {
+                    process_msg(re_pending_reqs_queue.dequeue);
                 }
             }
-            action commit_all_serialized(k:key_t,self:server_id, secondary:server_id) = {
-                while ~serialized(secondary,k).empty
-                    decreases serialized(secondary,k).tail - serialized(secondary,k).head
-                {
-                #invariant 0 <= pos & pos <= s.kv.end
-                #invariant lo.between(X,hi) & s.value(X) = 0 -> ~tab.contains(X)
-                #invariant lo.between(X,hi) & 0 <= Y & Y < pos & s.key_at(Y,X) & s.value(X) ~= 0
-                #        -> tab.contains(X) & tab.maps(X,s.value(X))
-                #invariant ~lo.between(X,hi) -> spec.tab_invar(X,Y)
-                # following are object invariants of tab and shouldn't be needed here
-                #invariant tab.maps(X,Y) & tab.maps(X,Z) -> Y = Z & tab.contains(X)
-                #{
-                #var k := s.kv.get_key(pos);
-                #var d := s.kv.get_value(pos);
-                #if lo.between(k,hi) & d ~= 0{
-                #call tab.set(k,d)
-                #};
-                #pos := pos.next
+            #else {
+                #    # msg.kind not recognizable; should not happen
+                #    assert(false, "msg.kind is unrecognizable");
                 #}
-                    var cl := serialized(secondary,k).dequeue;
-                    if self = true_primary(k) {
-                        commit(cl);
+        }
+
+        implement man_sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+
+            # Here we handle an announcement message on the management overlay.
+            # If we are the new primary and there is a new secondary, we send
+            # our full contents to the secondary in a `replicate` message.
+            if num_replicate_msg_to_expect > 0 {
+                man_msg_queue.enqueue(msg);
+            } else {
+                process_man_msg(msg);
+            }
+        }
+
+
+        # On a timer 'tick', we send a 'ping' to the manager
+        # with our current view number.
+
+        implement timer.timeout {
+            var msg : man_msg_t;
+            msg.kind := ping_kind;
+            msg.view := view;
+            msg.src := self;
+            msg.freq := freq;
+            for it,mn in manager_id.iter {
+                man_sock.send(manager(mn).sock.id,msg);
+            }
+        }
+
+        # This ghost code is used to keep track of append requests that
+        # have been serialized at the primary, but not yet committed at the
+        # secondary.
+        
+        specification {
+            instance serialized(K:hash_t) : unbounded_queue(client_id)
+            action commit_one(k:hash_t) = {
+                if ~serialized(k).empty {
+                    commit(serialized(k).dequeue);
+                }
+            }
+            common {
+                var true_primary(K:hash_t) : server_id
+                after init {
+                    true_primary(K) := 0;
+                }
+
+                action serialize(k:hash_t,primary:server_id,secondary:server_id,src_client:client_id) = {
+                    if primary = true_primary(k) {
+                        debug "serialize" with server = secondary, client = src_client;
+                        serialized(secondary,k).enqueue(src_client);
                     }
                 }
-                true_primary(k) := self;
+                action commit_all_serialized(k:hash_t,self:server_id, secondary:server_id) = {
+                    while ~serialized(secondary,k).empty
+                    decreases serialized(secondary,k).tail - serialized(secondary,k).head
+                    {
+                        var cl := serialized(secondary,k).dequeue;
+                        if self = true_primary(k) {
+                            commit(cl);
+                        }
+                    }
+                    true_primary(k) := self;
+                }
+                action abort_all_serialized(k:hash_t,primary:server_id, self:server_id) = {
+                    while ~serialized(primary,k).empty
+                    decreases serialized(primary,k).tail - serialized(primary,k).head
+                    {
+                        var cl := serialized(primary,k).dequeue;
+                    }
+                    true_primary(k) := primary;
+                } 
             }
         }
-    } with client.shard_t.kvt, client.shard_t.index
+    }with client.shard_t.kvt, client.shard_t.index
 }
-

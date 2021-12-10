@@ -18,9 +18,10 @@ module client_implementation = {
 
     after init {
         var primary:server_id := 0;
-        var default_len : uint[8] := hash_t_max/cast(server_in_ring);
-        var s:uint[8] := 0;
-        var e:uint[8] := s + default_len-1;
+        var default_len : hash_t := hash_t_max/cast(server_in_ring);
+        var s:hash_t := 0;
+        var e:hash_t := s + default_len-1;
+        var conf: config;
         while primary < server_in_ring{
             conf.primary := primary;
             conf.secondary := primary + 1;
@@ -29,7 +30,7 @@ module client_implementation = {
             }
 
 
-            confmap.set(s,e,conf);
+            confmap.set(hash_t.iter.create(s),hash_t.iter.create(e),conf);
             primary := primary + 1;
             s := e + 1;
             e := s + default_len-1;
@@ -39,7 +40,7 @@ module client_implementation = {
     # When the client gets an append request, it sends an append
     # request messages to the primary.
 
-    implement append_req {
+    implement append_req(key:key_t, val:byte) {
         var msg : msg_t;
         msg.kind := append_req_kind;
         msg.src_client := self;
@@ -56,7 +57,7 @@ module client_implementation = {
     # primary handles writes and the last replica in the chain
     # handles reads).
 
-    implement show_req {
+    implement show_req(key:key_t){
         var msg : msg_t;
         msg.kind := show_req_kind;
         msg.src_client := self;
@@ -89,12 +90,12 @@ module client_implementation = {
             var conf : config;
             var s_conf := msg.server_conf;
 
-            conf.primary := msg.relative_primary;
-            conf.secondary := msg.self_id;
+            conf.primary := s_conf.relative_primary;
+            conf.secondary := s_conf.self_id;
             confmap.set(s_conf.secondary_lo,s_conf.secondary_hi,conf);
 
-            conf.primary := msg.self_id;
-            conf.secondary := msg.relative_secondary;
+            conf.primary := s_conf.self_id;
+            conf.secondary := s_conf.relative_secondary;
             confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
             debug "new view" with client=self, s_conf = s_conf
         }

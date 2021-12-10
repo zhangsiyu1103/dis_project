@@ -3,10 +3,11 @@
 include network
 include shard
 
-module client_server_network = {
+module client_config= {
 
     global {
-        instance shard_t : table_shard(hash_t, kvt)
+        instance kvt : keyval(index, key_t.t, file)
+        instance shard_t : table_shard(hash_t, kvt.t)
     }
 
 
@@ -18,19 +19,19 @@ module client_server_network = {
 
 
     class server_config = {
-        field ring_id : nat
+        field ring_id : index
         field self_id : server_id
         field relative_primary : server_id          # primary id if self_id is the secondary
         field relative_secondary : server_id        # secondary if if self_id is the primary
-        field primary_lo : uint[8]
-        field primary_hi : uint[8]
-        field secondary_lo : uint[8]
-        field secondary_hi : uint[8]
+        field primary_lo : hash_t.iter.t
+        field primary_hi : hash_t.iter.t
+        field secondary_lo : hash_t.iter.t
+        field secondary_hi : hash_t.iter.t
     }
 
     class repartition_config = {
-        field lo : uint[8]
-        field hi : uint[8]
+        field lo : hash_t.iter.t
+        field hi : hash_t.iter.t
         field old_p : server_id
         field old_s : server_id
         field new_p : server_id
@@ -38,8 +39,8 @@ module client_server_network = {
     }
 
     #class copy_config = {
-    #    field lo : uint[8]
-    #    field hi : uint[8]
+    #    field lo : hash_t.iter.t
+    #    field hi : hash_t.iter.t
     #    field src : server_id
     #    field target : server_id
     #    #field new_p : server_id

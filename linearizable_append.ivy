@@ -5,9 +5,9 @@ module linearizable_append(client_id,key_t,byte,file) = {
     # The append/show interface is the same as in our previous
     # linearizable chain protocol without failures:
 
-    export action append_req(key:ket_t,val:byte)
+    export action append_req(key:key_t,val:byte)
     import action append_rsp
-    export action show_req(key:ket_t)
+    export action show_req(key:key_t)
     import action show_rsp(content:file)
 
     # This is our linearizability spec, same as before.

@@ -22,12 +22,10 @@ global {
 
     alias byte = uint[8]
     instance file : vector(byte)
+    instance key_t:iterable
+    instance hash_t:unsigned_bit_vector(8)
 
-    instance key_t: iterable
-    instance hash_t: unsigned_bit_vector(8)
-    #var hash_t_max: unsigned_bit_vector(8) := hash_max
-    instance index : unbounded_sequence
-    instance kvt : keyval(index, key_t.t, file)
-    var hash_t_max: uint[8]
-    var server_in_ring : server_id = 4
+    var server_in_ring:server_id
+    var hash_t_max: hash_t
+    #instance index : unbounded_sequence
 }

@@ -85,7 +85,8 @@ module hash_table(key,value,shard) = {
     }
 
     implement get {
-        v := tab.get(k,0)
+        var default:value;
+        v := tab.get(k,default)
     }
 
     implement extract_ {
@@ -100,11 +101,12 @@ module hash_table(key,value,shard) = {
                 invariant shard.valid(res)
             {
                 var k := idx.val;
-                res.kv := res.kv.append_pair(k,tab.get(k,0));
+                var default:value;
+                res.kv := res.kv.append_pair(k,tab.get(k,default));
                 idx := tab.next(idx)
             };
         }else{
-            var mid:key.iter.t := 0-1;
+            var mid:key.iter.t := key.iter.create(0-1);
             var idx := tab.lub(lo);
             while idx < mid
                 invariant lo <= idx & (idx < mid -> tab.contains(idx.val))
@@ -114,11 +116,12 @@ module hash_table(key,value,shard) = {
                 invariant shard.valid(res)
             {
                 var k := idx.val;
-                res.kv := res.kv.append_pair(k,tab.get(k,0));
+                var default:value;
+                res.kv := res.kv.append_pair(k,tab.get(k,default));
                 idx := tab.next(idx)
             };
 
-            mid := 0;
+            mid := key.iter.create(0);
             idx := tab.lub(mid);
             while idx < hi
                 invariant mid <= idx & (idx < hi -> tab.contains(idx.val))
@@ -160,7 +163,7 @@ module hash_table(key,value,shard) = {
                     pos := pos.next
                 }
             }else{
-                var mid:key.iter.t := 0-1;
+                var mid:key.iter.t := key.iter.create(0-1);
                 call tab.erase(lo,mid);
                 var pos:shard.index.t  := 0;
                 while pos < s.kv.end
@@ -180,7 +183,7 @@ module hash_table(key,value,shard) = {
                     pos := pos.next
                 }
 
-                mid := 0;
+                mid := key.iter.create(0);
                 call tab.erase(mid, hi);
                 pos  := 0;
                 while pos < s.kv.end

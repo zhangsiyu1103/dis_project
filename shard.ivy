@@ -17,7 +17,7 @@ module table_shard(key,data) = {
     type this = struct {
         lo : key.iter.t,
         hi : key.iter.t,
-        kv : kvt.iter.t
+        kv : kvt.t
     }
 
     relation key_at(S:this,I:index.t,X:key.t) = kv(S).key_at(I,X)
