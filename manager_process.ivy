@@ -53,10 +53,10 @@ module manager_process = {
 
             # Initialize ring with hash code
             var primary :server_id := 0;
-            #var default_len := (hash_t.max+1)/server_in_ring;
-            var default_len : hash_t := hash_t_max/cast(server_in_ring);
+            #var default_len := (hash_t.max+1)/param.server_in_ring;
+            var default_len : hash_t := param.hash_t_max/cast(param.server_in_ring);
 
-            assert hash_t_max >= cast(server_in_ring);
+            assert param.hash_t_max >= cast(param.server_in_ring);
 
             var count:nat := 0;
             used_server := used_server.resize(4,primary);
@@ -68,15 +68,15 @@ module manager_process = {
             change_amt := default_len / 4;
 
             # This may looks confusing because ring idx and server id are the same. All vectors are actually indexed by server idx and id are subject to change
-            while primary < server_in_ring{
-                if primary = server_in_ring -1{
-                    e := hash_t_max;
+            while primary < param.server_in_ring{
+                if primary = param.server_in_ring -1{
+                    e := param.hash_t_max;
                 }
                 used_server :=used_server.set(cast(primary),primary);
                 #used_server := used_server.append(primary);
                 conf.primary := primary;
                 conf.secondary := primary + 1;
-                if conf.secondary = server_in_ring{
+                if conf.secondary = param.server_in_ring{
                     conf.secondary := 0;
                 }
 
@@ -211,10 +211,10 @@ module manager_process = {
                     var prev_idx : index;
                     var next_idx : index;
                     if ring_idx = 0{
-                        prev_idx := cast(server_in_ring);
+                        prev_idx := cast(param.server_in_ring);
                         prev_idx := prev_idx - 1;
                         next_idx := ring_idx + 1;
-                    }else if ring_idx = cast(server_in_ring) -1 {
+                    }else if ring_idx = cast(param.server_in_ring) -1 {
                         prev_idx := ring_idx - 1;
                         next_idx := 0;
                     }
@@ -314,7 +314,7 @@ module manager_process = {
                     var next_idx : index;
                     var next_next_idx : index;
                     var change_idx : index;
-                    var len: index := cast(server_in_ring) - 1;
+                    var len: index := cast(param.server_in_ring) - 1;
 
                     min_freq := freqs(used_server.get(0));
                     max_freq := freqs(used_server.get(0));
@@ -409,5 +409,5 @@ module manager_process = {
         }
         instance paxos : multi_paxos(manager_id,client.manager.op_t,client.manager.op_t.empty)
         #instantiate multi_paxos(manager_id,client.manager.op_t,client.manager.op_t.empty);
-    }with vector[server_id]
+    }with vector[server_id],vector[server_config]
 }

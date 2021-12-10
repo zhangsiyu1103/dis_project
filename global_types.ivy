@@ -24,8 +24,13 @@ global {
     instance file : vector(byte)
     instance key_t:iterable
     instance hash_t:unsigned_bit_vector(8)
+	
+	function key_hash(X:key_t):hash_t
 
-    var server_in_ring:server_id
-    var hash_t_max: hash_t
+	object param = {
+    	function server_in_ring= 4: server_id
+    	function hash_t_max = 0:hash_t-1:  hash_t
+	}
+	
     #instance index : unbounded_sequence
 }

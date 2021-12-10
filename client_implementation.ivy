@@ -18,17 +18,17 @@ module client_implementation = {
 
     after init {
         var primary:server_id := 0;
-        var default_len : hash_t := hash_t_max/cast(server_in_ring);
+        var default_len : hash_t := param.hash_t_max/cast(param.server_in_ring);
         var s:hash_t := 0;
         var e:hash_t := s + default_len-1;
         var conf: config;
-        while primary < server_in_ring{
-            if primary = server_in_ring -1{
-                e := hash_t_max;
+        while primary < param.server_in_ring{
+            if primary = param.server_in_ring -1{
+                e := param.hash_t_max;
             }
             conf.primary := primary;
             conf.secondary := primary + 1;
-            if conf.secondary = server_in_ring{
+            if conf.secondary = param.server_in_ring{
                 conf.secondary := 0;
             }
 
