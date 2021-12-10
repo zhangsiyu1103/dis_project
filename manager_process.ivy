@@ -69,6 +69,9 @@ module manager_process = {
 
             # This may looks confusing because ring idx and server id are the same. All vectors are actually indexed by server idx and id are subject to change
             while primary < server_in_ring{
+                if primary = server_in_ring -1{
+                    e := hash_t_max;
+                }
                 used_server :=used_server.set(cast(primary),primary);
                 #used_server := used_server.append(primary);
                 conf.primary := primary;

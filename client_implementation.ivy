@@ -23,6 +23,9 @@ module client_implementation = {
         var e:hash_t := s + default_len-1;
         var conf: config;
         while primary < server_in_ring{
+            if primary = server_in_ring -1{
+                e := hash_t_max;
+            }
             conf.primary := primary;
             conf.secondary := primary + 1;
             if conf.secondary = server_in_ring{
@@ -97,7 +100,7 @@ module client_implementation = {
             conf.primary := s_conf.self_id;
             conf.secondary := s_conf.relative_secondary;
             confmap.set(s_conf.primary_lo,s_conf.primary_hi,conf);
-            debug "new view" with client=self, s_conf = s_conf
+            debug "new view" with src = src, client=self, s_conf = s_conf
         }
     }
 }

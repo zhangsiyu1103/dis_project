@@ -43,6 +43,7 @@ module linearizable_append(client_id,key_t,byte,file) = {
             }
 
             before append_rsp(self:client_id) {
+                debug "append_rsp" with pending=pending(self), pending_kind = pending_kind(self), committed = committed(self);
                 require pending(self) & pending_kind(self) = append_kind & committed(self);
                 pending(self) := false;
                 committed(self) := false;

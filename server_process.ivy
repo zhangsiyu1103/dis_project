@@ -39,6 +39,9 @@ module server_process(commit) = {
             var e:hash_t := s + default_len-1;
             var conf:config;
             while primary < server_in_ring{
+                if primary = server_in_ring -1{
+                    e := hash_t_max;
+                }
                 conf.primary := primary;
                 conf.secondary := primary + 1;
                 if conf.secondary = server_in_ring{
@@ -319,27 +322,27 @@ module server_process(commit) = {
                 }
             }
             common {
-                var true_primary(K:hash_t) : server_id
-                after init {
-                    true_primary(K) := 0;
-                }
+                #var true_primary(K:hash_t) : server_id
+                #after init {
+                #    true_primary(K) := 0;
+                #}
 
                 action serialize(k:hash_t,primary:server_id,secondary:server_id,src_client:client_id) = {
-                    if primary = true_primary(k) {
+                    #if primary = true_primary(k) {
                         debug "serialize" with server = secondary, client = src_client;
                         serialized(secondary,k).enqueue(src_client);
-                    }
+                        #}
                 }
                 action commit_all_serialized(k:hash_t,self:server_id, secondary:server_id) = {
                     while ~serialized(secondary,k).empty
                     decreases serialized(secondary,k).tail - serialized(secondary,k).head
                     {
                         var cl := serialized(secondary,k).dequeue;
-                        if self = true_primary(k) {
+                        #if self = true_primary(k) {
                             commit(cl);
-                        }
+                            #}
                     }
-                    true_primary(k) := self;
+                    #true_primary(k) := self;
                 }
                 action abort_all_serialized(k:hash_t,primary:server_id, self:server_id) = {
                     while ~serialized(primary,k).empty
@@ -347,7 +350,7 @@ module server_process(commit) = {
                     {
                         var cl := serialized(primary,k).dequeue;
                     }
-                    true_primary(k) := primary;
+                    #true_primary(k) := primary;
                 } 
             }
         }
